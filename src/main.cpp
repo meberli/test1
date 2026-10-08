@@ -14,8 +14,11 @@
 #include "panel_ui.h"
 #include "board_pins.h"
 
-#if ARDUINO_USB_CDC_ON_BOOT
+#if defined(ARDUINO_USB_CDC_ON_BOOT) && ARDUINO_USB_CDC_ON_BOOT
 #error USB CDC must stay off: GPIO19/20 are touch and LCD pins, and USB-C is the CH340 UART
+#endif
+#if !defined(ARDUINO_USB_MODE) || ARDUINO_USB_MODE != 0
+#error ARDUINO_USB_MODE must be 0 so GPIO19/GPIO20 stay available for touch and the LCD
 #endif
 
 namespace {
