@@ -41,7 +41,8 @@ const char* kNotConfiguredBody =
     "to include/panel_config.h, fill in the\n"
     "local Miniserver, then rebuild and\n"
     "flash over USB.\n\n"
-    "The onboard relay is not used.";
+    "Relay 1 stays off until Relais\n"
+    "on Sonstiges is tapped.";
 
 void start_wifi() {
   WiFi.persistent(false);
@@ -158,7 +159,9 @@ void setup() {
   Serial.println("ESP32-4848S040C_I_Y_1 Loxone panel");
   Serial.printf("Flash %u bytes, PSRAM %u bytes\n", static_cast<unsigned>(ESP.getFlashChipSize()),
                 static_cast<unsigned>(ESP.getPsramSize()));
-  Serial.printf("Relay GPIOs left unconfigured: %d (this SKU), %d, %d\n", kPinRelay1, kPinRelay2, kPinRelay3);
+  panel_relay_begin();
+  Serial.printf("Relay 1 GPIO%d off (level %d). GPIO%d and GPIO%d left unconfigured\n", kPinRelay1,
+                kRelayOffLevel, kPinRelay2, kPinRelay3);
 
   if (!panel_display_begin()) {
     Serial.println("Display init failed");
@@ -189,7 +192,7 @@ void setup() {
       Serial.println("panel_config.h not found; not configured");
     }
     ui_show_message("Not configured", kNotConfiguredBody, false);
-    ui_set_status("Relay is not used");
+    ui_set_status("Relay off");
     return;
   }
 

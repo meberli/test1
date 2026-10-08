@@ -1,6 +1,6 @@
 # Loxone panel for Guition ESP32-4848S040C_I_Y_1
 
-Firmware for the Guition 4.0 inch 480×480 capacitive wall panel. It draws a Loxone home screen and talks to a local Miniserver over HTTP. It does not drive the onboard relay.
+Firmware for the Guition 4.0 inch 480×480 capacitive wall panel. It draws a Loxone home screen and talks to a local Miniserver over HTTP. The one-way relay is a local switch on the Sonstiges screen.
 
 The photo on this unit reads SKU 10103003 (2444), model `ESP32-4848S040C_I_Y_1`, and barcode `C3713-1`. `10103003` and `C3713-1` do not appear in Guition's specification or product page checked for this project. The model string does.
 
@@ -22,7 +22,7 @@ Guition (Shenzhen Jingcai Intelligent) sells this as a 4.0 inch IPS module in an
 
 The specification cover prints `ESP32-4848S043C_I_Y_1`. The page body and the product page use `ESP32-4848S040C_I_Y_1`, which matches the label. Treat the cover `S043` as a typo.
 
-Guition does not define the letters in `C_I_Y_1` one by one. The specification only maps `_Y_1` to the one-way relay and `_Y_3` to the three-way relay. The Chinese retail line "带外壳1位输入" (enclosure, one input) is the same one-channel unit. This firmware leaves that channel alone.
+Guition does not define the letters in `C_I_Y_1` one by one. The specification only maps `_Y_1` to the one-way relay and `_Y_3` to the three-way relay. The Chinese retail line "带外壳1位输入" (enclosure, one input) is the same one-channel unit. This firmware drives that one relay from the Sonstiges screen. GPIO1 and GPIO2 stay unused.
 
 The "Interface Description" page of the Guition PDF is a product photo (TF card, battery pads, USB-C). It is not a GPIO table. The pinout below is from published working configs that agree with each other, not from that drawing.
 
@@ -65,10 +65,12 @@ These pins are the same in Arduino_GFX's `ESP32_4848S040_86BOX_GUITION` device, 
 | GT911 INT, RST | not connected | Passed to the touch library as `-1` |
 | TF CS, MISO | 42, 41 | Slot is not mounted by this firmware |
 | UART TX, RX | 43, 44 | CH340, USB flashing and serial log |
-| Relay 1 | 40 | This SKU. **Not configured, not driven** |
+| Relay 1 | 40 | This SKU. Active high: HIGH on, LOW off. Off at boot |
 | Relay 2, relay 3 | 2, 1 | Three-way SKU only. **Not configured, not driven** |
 
 RGB timings copied from the Arduino_GFX device: PCLK 12 MHz, hsync polarity 1, front porch 10, pulse 8, back porch 50, vsync polarity 1, front porch 10, pulse 8, back porch 20. The ST7701 init sequence is `st7701_type9_init_operations` from that library ("480x480 square (86 Box) GUITION ESP32-4848S040").
+
+Relay polarity is the ha5dzs setup write: `digitalWrite(RELAY1, LOW)` with the comment "All off, by default" (`src/main.cpp` in that port, `RELAY1` is GPIO40). HIGH turns the relay on. The ESPHome device page lists the same pin with `inverted: true`, which would mean the opposite. This firmware follows the ha5dzs off write, not that catalog flag.
 
 ## What the firmware does
 
@@ -80,7 +82,8 @@ Room names, control names, and the Miniserver name are drawn with DejaVu Sans co
 
 - With no `include/panel_config.h`, or with the Wi-Fi SSID, Miniserver host, or user left empty, the home screen is a **Not configured** panel. It tells you which file to copy. It does not pretend the house is online.
 - With a config file, it joins Wi-Fi and GETs `/data/LoxAPP3.json` with HTTP basic auth.
-- The first screen is only controls marked `isFavorite` in that file. Weiter then shows the rest, one group per screen: Licht (Switch, TimedSwitch, LightController, Dimmer), Storen (Jalousie), then Sonstiges (pushbuttons). Up to 48 controls. Favorites are not repeated in the later groups.
+- The first screen is only controls marked `isFavorite` in that file. Weiter then shows the rest, one group per screen: Licht (Switch, TimedSwitch, LightController, Dimmer), Storen (Jalousie), then Sonstiges (pushbuttons, plus one local Relais tile). Up to 48 Loxone controls. Favorites are not repeated in the later groups.
+- Relais is not a Loxone control and does not send a Miniserver command. It toggles relay 1 on GPIO40. The tile shows An or Aus from the pin level. Boot writes the pin low, which is off, and the pin changes only when that tile is tapped. GPIO1 and GPIO2 are not configured.
 - LoxAPP3.json has no live values. Opening a screen reads each light and shutter on it, first with `GET /jdev/sps/io/<uuidAction>/all` and, if that has no number, with `GET /jdev/sps/io/<state uuid>/state`. Until the read succeeds the tile stays unknown (`...`), not Aus. Coming back to a screen reads it again.
 - A light tap sends `On` or `Off` from the last known value, via `GET /jdev/sps/io/<uuidAction>/<command>`. Storen Auf sends `FullUp` and Ab sends `FullDown`. Position 0 is fully open and 1 is fully closed.
 - Authorization goes through `LoxoneAuthorizer` (`src/loxone_auth.h`). `LoxoneBasicAuthorizer` is what runs. `LoxoneTokenAuthorizer` is the seam for a later `getkey2` / `gettoken` flow. Set `LOXONE_AUTH` to `"token"` and it refuses to connect instead of sending the password. The client does not know which scheme `apply()` implements.

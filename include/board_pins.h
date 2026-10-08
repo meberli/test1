@@ -64,10 +64,17 @@ constexpr int kPinUartRx = 44;
 
 // Relays. The C_I_Y_1 SKU is the one-way model: relay 1 is GPIO40.
 // GPIO1 and GPIO2 are the extra relays on the three-way SKU (C_I_Y_3).
-// This firmware must not configure or drive any of them.
+// This firmware drives relay 1 only. It does not configure GPIO1 or GPIO2.
+//
+// Off level is from ha5dzs setup(): pinMode(RELAY1) then digitalWrite(RELAY1, LOW)
+// with the comment "All off, by default." HIGH turns this relay on.
+// The ESPHome device page sets GPIO40 inverted: true (logical ON drives the
+// pin low). That catalog entry disagrees; this firmware follows the ha5dzs write.
 constexpr int kPinRelay1 = 40;
 constexpr int kPinRelay2 = 2;
 constexpr int kPinRelay3 = 1;
+constexpr int kRelayOnLevel = 1;
+constexpr int kRelayOffLevel = 0;
 
 static_assert(kPinRelay1 != kPinBacklight, "relay pin collided with backlight");
 static_assert(kPinRelay1 != kPinTpSda, "relay pin collided with touch");

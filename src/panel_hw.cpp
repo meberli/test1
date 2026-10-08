@@ -143,3 +143,12 @@ bool panel_lvgl_start() {
   lv_indev_drv_register(&indev_drv);
   return true;
 }
+
+void panel_relay_begin() {
+  pinMode(kPinRelay1, OUTPUT);
+  digitalWrite(kPinRelay1, kRelayOffLevel);
+}
+
+bool panel_relay_is_on() { return digitalRead(kPinRelay1) == kRelayOnLevel; }
+
+void panel_relay_set(bool on) { digitalWrite(kPinRelay1, on ? kRelayOnLevel : kRelayOffLevel); }

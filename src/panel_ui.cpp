@@ -10,6 +10,7 @@
 #include <strings.h>
 
 #include "font_dejavu.h"
+#include "panel_hw.h"
 
 namespace {
 
@@ -23,6 +24,8 @@ constexpr int kRowsPerPage = 2;
 constexpr int kPerPage = 4;
 constexpr int kMaxPages = 32;
 constexpr uint32_t kShutterRereadMs = 3000;
+// Page-plan slot for the local GPIO40 relay. Not a Loxone control index.
+constexpr int kLocalRelay = -2;
 
 enum Section : uint8_t { kSecFav = 0, kSecLight = 1, kSecShutter = 2, kSecOther = 3 };
 
@@ -187,6 +190,37 @@ void pack_indices(Section section, int* idxs, int n) {
   }
 }
 
+void place_relay() {
+  if (page_n > 0 && pages[page_n - 1].section == kSecOther) {
+    PagePlan* current = &pages[page_n - 1];
+    if (current->nrows > 0) {
+      RowPlan* last = &current->rows[current->nrows - 1];
+      if (!last->shutter && last->b < 0) {
+        last->b = kLocalRelay;
+        return;
+      }
+    }
+    if (current->nrows < kRowsPerPage) {
+      RowPlan* row = &current->rows[current->nrows];
+      row->shutter = false;
+      row->a = kLocalRelay;
+      row->b = -1;
+      current->nrows++;
+      return;
+    }
+  }
+  if (page_n >= kMaxPages) {
+    return;
+  }
+  PagePlan* current = &pages[page_n];
+  current->section = kSecOther;
+  current->nrows = 1;
+  current->rows[0].shutter = false;
+  current->rows[0].a = kLocalRelay;
+  current->rows[0].b = -1;
+  page_n++;
+}
+
 void rebuild_pages() {
   page_n = 0;
   for (int section = kSecFav; section <= kSecOther; ++section) {
@@ -199,6 +233,7 @@ void rebuild_pages() {
     }
     pack_indices(static_cast<Section>(section), idxs, n);
   }
+  place_relay();
 }
 
 bool index_on_page(int index) {
@@ -320,7 +355,19 @@ void fill_title(char* out, size_t n, const LoxoneControl& ctrl) {
   }
 }
 
+void show_relay_tile(int slot) {
+  show(tiles[slot]);
+  bool on = panel_relay_is_on();
+  lv_label_set_text(tile_name[slot], "Relais");
+  lv_label_set_text(tile_sub[slot], on ? "An" : "Aus");
+  style_tile(tiles[slot], kLoxoneSwitch, true, on);
+}
+
 void show_switch_tile(int slot, int index) {
+  if (index == kLocalRelay) {
+    show_relay_tile(slot);
+    return;
+  }
   show(tiles[slot]);
   const LoxoneControl& ctrl = controls[index];
   lv_label_set_text(tile_name[slot], ctrl.name);
@@ -363,10 +410,10 @@ void refresh_tiles() {
         show_shutter_row(row_slot, current.rows[row_slot].a);
         continue;
       }
-      if (current.rows[row_slot].a >= 0) {
+      if (current.rows[row_slot].a >= 0 || current.rows[row_slot].a == kLocalRelay) {
         show_switch_tile(row_slot * 2, current.rows[row_slot].a);
       }
-      if (current.rows[row_slot].b >= 0) {
+      if (current.rows[row_slot].b >= 0 || current.rows[row_slot].b == kLocalRelay) {
         show_switch_tile(row_slot * 2 + 1, current.rows[row_slot].b);
       }
     }
@@ -436,11 +483,16 @@ void queue_command(int index, const char* command) {
 }
 
 void on_tile(lv_event_t* event) {
+  int slot = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(event)));
+  int index = control_for_slot(slot);
+  if (index == kLocalRelay) {
+    panel_relay_set(!panel_relay_is_on());
+    refresh_tiles();
+    return;
+  }
   if (command_pending) {
     return;
   }
-  int slot = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(event)));
-  int index = control_for_slot(slot);
   if (index < 0 || static_cast<size_t>(index) >= control_count) {
     return;
   }
@@ -725,15 +777,6 @@ void ui_show_controls(const LoxoneControl* items, size_t count, size_t supported
     needs_read[i] = has_status(controls[i]);
   }
   rebuild_pages();
-  if (count == 0) {
-    lv_label_set_text(heading, server_name[0] != '\0' ? server_name : "Loxone");
-    lv_obj_set_style_text_color(heading, lv_color_hex(0xF2F5F7), 0);
-    ui_set_status("Keine Steuerungen");
-    ui_show_message("Connected",
-                    "The Miniserver answered, but LoxAPP3.json has no switch, light, button, or shutter controls.",
-                    false);
-    return;
-  }
   hide(message);
   arm_visible_reads();
   set_grid_visible(true);
