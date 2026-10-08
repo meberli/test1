@@ -117,14 +117,34 @@ void poll() {
       phase = load_structure() ? Phase::Ready : Phase::Failed;
       break;
     case Phase::Ready: {
-      LoxoneCommandRequest command;
-      if (ui_take_command(&command)) {
-        LoxoneHttpResult result = loxone_send_command(*auth, command.action, command.command);
-        Serial.printf("Command %s -> %s\n", command.command, result.ok ? "ok" : result.detail);
-        ui_command_finished(command.index, result.ok, command.command, result.detail);
-      }
       if (WiFi.status() != WL_CONNECTED) {
         ui_set_status("Wi-Fi disconnected");
+        break;
+      }
+      LoxoneCommandRequest command;
+      if (ui_take_command(&command)) {
+        if (strcmp(command.command, "Stop") == 0) {
+          LoxoneHttpResult up = loxone_send_command(*auth, command.action, "UpOff");
+          LoxoneHttpResult down = loxone_send_command(*auth, command.action, "DownOff");
+          bool ok = up.ok || down.ok;
+          const char* detail = up.detail[0] != '\0' ? up.detail : down.detail;
+          Serial.printf("Command Stop -> %s\n", ok ? "ok" : detail);
+          ui_command_finished(command.index, ok, "Stop", ok ? "Stopped" : detail);
+        } else {
+          LoxoneHttpResult result = loxone_send_command(*auth, command.action, command.command);
+          Serial.printf("Command %s -> %s\n", command.command, result.ok ? "ok" : result.detail);
+          ui_command_finished(command.index, result.ok, command.command, result.detail);
+        }
+      } else {
+        int index = -1;
+        char state_id[40];
+        if (ui_take_state(&index, state_id, sizeof(state_id))) {
+          char value[64];
+          LoxoneHttpResult result = loxone_read_state(*auth, state_id, value, sizeof(value));
+          Serial.printf("State %d -> %s (%s)\n", index, result.ok ? value : "-",
+                        result.ok ? "ok" : result.detail);
+          ui_state_finished(index, result.ok, result.ok ? value : nullptr);
+        }
       }
       break;
     }

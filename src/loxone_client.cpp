@@ -44,6 +44,40 @@ bool normalize_host(char* out, size_t out_n, char* error, size_t error_n) {
   return true;
 }
 
+bool code_is_200(JsonVariant code) {
+  if (code.is<int>()) {
+    return code.as<int>() == 200;
+  }
+  if (code.is<const char*>()) {
+    return strcmp(code.as<const char*>(), "200") == 0;
+  }
+  return false;
+}
+
+bool copy_scalar(JsonVariant value, char* out, size_t out_n) {
+  if (out == nullptr || out_n == 0) {
+    return false;
+  }
+  out[0] = '\0';
+  if (value.is<const char*>()) {
+    snprintf(out, out_n, "%s", value.as<const char*>());
+    return true;
+  }
+  if (value.is<bool>()) {
+    snprintf(out, out_n, "%d", value.as<bool>() ? 1 : 0);
+    return true;
+  }
+  if (value.is<int>() || value.is<long>()) {
+    snprintf(out, out_n, "%ld", static_cast<long>(value.as<long>()));
+    return true;
+  }
+  if (value.is<float>()) {
+    snprintf(out, out_n, "%.4f", value.as<float>());
+    return true;
+  }
+  return false;
+}
+
 }  // namespace
 
 LoxoneHttpResult loxone_get(LoxoneAuthorizer& auth, const char* path, uint8_t* body, size_t cap,
@@ -192,21 +226,73 @@ LoxoneHttpResult loxone_send_command(LoxoneAuthorizer& auth, const char* action,
   }
   JsonVariant code = doc["LL"]["Code"];
   if (code.isNull()) {
+    code = doc["LL"]["@Code"];
+  }
+  if (code.isNull()) {
     return result;
   }
-  bool pass = false;
-  if (code.is<int>()) {
-    pass = code.as<int>() == 200;
-  } else if (code.is<const char*>()) {
-    pass = strcmp(code.as<const char*>(), "200") == 0;
-  }
-  if (!pass) {
+  if (!code_is_200(code)) {
     result.ok = false;
     if (code.is<int>()) {
       snprintf(result.detail, sizeof(result.detail), "Miniserver code %d", code.as<int>());
-    } else {
+    } else if (code.is<const char*>()) {
       snprintf(result.detail, sizeof(result.detail), "Miniserver code %s", code.as<const char*>());
+    } else {
+      set_detail(&result, "Miniserver rejected the command");
     }
   }
+  return result;
+}
+
+LoxoneHttpResult loxone_read_state(LoxoneAuthorizer& auth, const char* state, char* value, size_t value_n) {
+  LoxoneHttpResult result = {};
+  if (value != nullptr && value_n > 0) {
+    value[0] = '\0';
+  }
+  if (!loxone_id_ok(state, 40) || value == nullptr || value_n == 0) {
+    set_detail(&result, "State id was rejected");
+    return result;
+  }
+
+  char path[96];
+  int wrote = snprintf(path, sizeof(path), "/jdev/sps/io/%s/state", state);
+  if (wrote <= 0 || static_cast<size_t>(wrote) >= sizeof(path)) {
+    set_detail(&result, "State path was too long");
+    return result;
+  }
+
+  uint8_t body[640];
+  size_t length = 0;
+  result = loxone_get(auth, path, body, sizeof(body), &length);
+  if (!result.ok) {
+    return result;
+  }
+
+  StaticJsonDocument<512> doc;
+  if (deserializeJson(doc, body, length) != DeserializationError::Ok) {
+    result.ok = false;
+    set_detail(&result, "State response was not JSON");
+    return result;
+  }
+  JsonObject ll = doc["LL"].as<JsonObject>();
+  JsonVariant code = ll["Code"];
+  if (code.isNull()) {
+    code = ll["@Code"];
+  }
+  if (!code_is_200(code)) {
+    result.ok = false;
+    set_detail(&result, "State was not available");
+    return result;
+  }
+  JsonVariant raw = ll["value"];
+  if (raw.isNull()) {
+    raw = ll["@value"];
+  }
+  if (!copy_scalar(raw, value, value_n)) {
+    result.ok = false;
+    set_detail(&result, "State had no value");
+    return result;
+  }
+  set_detail(&result, "OK");
   return result;
 }

@@ -32,6 +32,43 @@ bool is_switch_type(const char* type) {
          strcmp(type, "LightController") == 0 || strcmp(type, "Dimmer") == 0;
 }
 
+bool is_shutter_type(const char* type) { return strcmp(type, "Jalousie") == 0; }
+
+// states.<key> is a uuid. Missing or unsafe ids leave the control without a live value.
+void copy_state(LoxoneControl* dst, JsonObject ctrl, const char* key, LoxoneStateKind kind) {
+  dst->state[0] = '\0';
+  dst->state_kind = kLoxoneStateNone;
+  JsonObject states = ctrl["states"].as<JsonObject>();
+  if (states.isNull() || !states.containsKey(key)) {
+    return;
+  }
+  const char* id = states[key] | "";
+  if (!loxone_id_ok(id, sizeof(dst->state))) {
+    return;
+  }
+  copy_trunc(dst->state, sizeof(dst->state), id);
+  dst->state_kind = kind;
+}
+
+void assign_state(LoxoneControl* dst, JsonObject ctrl, const char* type) {
+  if (dst->kind == kLoxoneShutter) {
+    copy_state(dst, ctrl, "position", kLoxoneStatePosition);
+    return;
+  }
+  if (dst->kind != kLoxoneSwitch) {
+    dst->state[0] = '\0';
+    dst->state_kind = kLoxoneStateNone;
+    return;
+  }
+  if (strcmp(type, "Dimmer") == 0) {
+    copy_state(dst, ctrl, "position", kLoxoneStatePosition);
+  } else if (strcmp(type, "LightController") == 0) {
+    copy_state(dst, ctrl, "activeScene", kLoxoneStateScene);
+  } else {
+    copy_state(dst, ctrl, "active", kLoxoneStateActive);
+  }
+}
+
 int compare_controls(const void* left, const void* right) {
   const LoxoneControl* a = static_cast<const LoxoneControl*>(left);
   const LoxoneControl* b = static_cast<const LoxoneControl*>(right);
@@ -113,6 +150,8 @@ bool loxone_parse_structure(const uint8_t* json, size_t length, LoxoneControl* o
     LoxoneKind kind;
     if (is_switch_type(type)) {
       kind = kLoxoneSwitch;
+    } else if (is_shutter_type(type)) {
+      kind = kLoxoneShutter;
     } else if (strcmp(type, "Pushbutton") == 0) {
       kind = kLoxonePulse;
     } else {
@@ -145,6 +184,7 @@ bool loxone_parse_structure(const uint8_t* json, size_t length, LoxoneControl* o
     copy_trunc(out[count].room, sizeof(out[count].room), room);
     copy_trunc(out[count].action, sizeof(out[count].action), action);
     out[count].kind = kind;
+    assign_state(&out[count], ctrl, type);
     count++;
   }
 

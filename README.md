@@ -74,12 +74,15 @@ RGB timings copied from the Arduino_GFX device: PCLK 12 MHz, hsync polarity 1, f
 
 PlatformIO project, Arduino-ESP32, the published Arduino_GFX 1.6.0 device for this panel, LVGL 8.4, and TAMC_GT911 1.0.2. That is the same display stack as the Arduino_GFX device entry and the ha5dzs PlatformIO port.
 
-The screen is 480×480. Tiles are 222×140 px, page buttons are 140×72, and the retry button is 400×88.
+The screen is 480×480. Light tiles are 222×140 px. A shutter uses the full width of one row, with Up, Stop, and Down buttons at 140×80. Page buttons are 140×72, and the retry button is 400×88.
+
+Room names, control names, and the Miniserver name are drawn with DejaVu Sans covering Latin-1 (U+00A0–U+00FF), including ä, ö, ü, Ä, Ö, Ü, and ß.
 
 - With no `include/panel_config.h`, or with the Wi-Fi SSID, Miniserver host, or user left empty, the home screen is a **Not configured** panel. It tells you which file to copy. It does not pretend the house is online.
 - With a config file, it joins Wi-Fi and GETs `/data/LoxAPP3.json` with HTTP basic auth.
-- It shows Switch, TimedSwitch, LightController, Dimmer (On/Off), and Pushbutton (Pulse) controls from that file, grouped by room. Up to 32 controls, four per page.
-- A tap sends `GET /jdev/sps/io/<uuidAction>/<command>`. Live state is not in LoxAPP3.json, so the first tap on a switch sends `On`. The next tap sends `Off`. The tile color follows the last command that succeeded.
+- It shows Switch, TimedSwitch, LightController, and Dimmer (On/Off), Pushbutton (Pulse), and Jalousie shutters from that file, grouped by room. Up to 32 controls. Lights share a row in pairs. Each shutter gets its own row, so the shutter in Büro shows up with that room's lights.
+- LoxAPP3.json has no live values. After the list loads, each light and shutter is read with `GET /jdev/sps/io/<state uuid>/state`. The uuid is `states.active` for a switch, `states.position` for a dimmer or shutter, and `states.activeScene` for a light controller. Until that read succeeds the tile stays in the unknown color (blue border, subtitle `...`). It is not drawn as Off. A failed read stays unknown (`n/a`) instead of being called Off.
+- A light tap sends `On` or `Off` from the last known value, via `GET /jdev/sps/io/<uuidAction>/<command>`. Shutter Up sends `FullUp`, Down sends `FullDown`. Stop sends `UpOff` and then `DownOff`, because each of those only stops one direction. Position 0 is fully open and 1 is fully closed.
 - Authorization goes through `LoxoneAuthorizer` (`src/loxone_auth.h`). `LoxoneBasicAuthorizer` is what runs. `LoxoneTokenAuthorizer` is the seam for a later `getkey2` / `gettoken` flow. Set `LOXONE_AUTH` to `"token"` and it refuses to connect instead of sending the password. The client does not know which scheme `apply()` implements.
 - Wi-Fi passwords are not written to NVS (`WiFi.persistent(false)`). Serial logs the host and the auth scheme name, not the user or the password.
 

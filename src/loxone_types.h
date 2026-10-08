@@ -5,15 +5,26 @@
 
 // Controls this panel can show. Other LoxAPP3.json types are skipped.
 enum LoxoneKind : uint8_t {
-  kLoxoneSwitch = 0,  // On / Off
-  kLoxonePulse = 1,   // Pulse
+  kLoxoneSwitch = 0,   // On / Off
+  kLoxonePulse = 1,    // Pulse
+  kLoxoneShutter = 2,  // Jalousie: FullUp / Stop / FullDown
+};
+
+// Which states.* entry to read, and how to turn the text into on/off or a position.
+enum LoxoneStateKind : uint8_t {
+  kLoxoneStateNone = 0,
+  kLoxoneStateActive,    // Switch, TimedSwitch: "0" off, "1" on
+  kLoxoneStatePosition,  // Dimmer 0..100 (0 off). Jalousie 0..1 (0 up, 1 down)
+  kLoxoneStateScene,     // LightController: scene 0 is all off
 };
 
 struct LoxoneControl {
   char name[64];
   char room[40];
   char action[40];
+  char state[40];
   LoxoneKind kind;
+  LoxoneStateKind state_kind;
 };
 
 constexpr size_t kLoxoneControlCap = 32;
