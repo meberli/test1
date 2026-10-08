@@ -35,6 +35,9 @@ const uint32_t kShutterColor[2] = {0x245A8D, 0x1F6B45};
 
 lv_obj_t* heading = nullptr;
 lv_obj_t* status = nullptr;
+lv_obj_t* section_btn[4] = {};
+lv_obj_t* section_lbl[4] = {};
+lv_obj_t* empty_hint = nullptr;
 lv_obj_t* tiles[kPerPage] = {};
 lv_obj_t* tile_name[kPerPage] = {};
 lv_obj_t* tile_sub[kPerPage] = {};
@@ -190,40 +193,69 @@ void pack_indices(Section section, int* idxs, int n) {
   }
 }
 
-void place_relay() {
-  if (page_n > 0 && pages[page_n - 1].section == kSecOther) {
-    PagePlan* current = &pages[page_n - 1];
-    if (current->nrows > 0) {
-      RowPlan* last = &current->rows[current->nrows - 1];
-      if (!last->shutter && last->b < 0) {
-        last->b = kLocalRelay;
-        return;
-      }
+void add_empty_page(Section section) {
+  if (page_n >= kMaxPages) {
+    return;
+  }
+  PagePlan* current = &pages[page_n++];
+  current->section = section;
+  current->nrows = 0;
+  current->rows[0] = RowPlan{false, -1, -1};
+  current->rows[1] = RowPlan{false, -1, -1};
+}
+
+bool has_section(Section section) {
+  for (int i = 0; i < page_n; ++i) {
+    if (pages[i].section == section) {
+      return true;
     }
-    if (current->nrows < kRowsPerPage) {
-      RowPlan* row = &current->rows[current->nrows];
-      row->shutter = false;
-      row->a = kLocalRelay;
-      row->b = -1;
-      current->nrows++;
-      return;
-    }
+  }
+  return false;
+}
+
+// Sonstiges always starts with the local relay, even when Loxone has no
+// pushbuttons. That section used to be omitted, so the switch never appeared.
+void pack_other(int* idxs, int n) {
+  if (n > 1) {
+    qsort(idxs, static_cast<size_t>(n), sizeof(int), compare_index);
   }
   if (page_n >= kMaxPages) {
     return;
   }
-  PagePlan* current = &pages[page_n];
+  PagePlan* current = &pages[page_n++];
   current->section = kSecOther;
   current->nrows = 1;
-  current->rows[0].shutter = false;
-  current->rows[0].a = kLocalRelay;
-  current->rows[0].b = -1;
-  page_n++;
+  current->rows[0] = RowPlan{false, kLocalRelay, -1};
+  current->rows[1] = RowPlan{false, -1, -1};
+  int i = 0;
+  if (i < n) {
+    current->rows[0].b = idxs[i++];
+  }
+  while (i < n) {
+    if (current->nrows == kRowsPerPage) {
+      if (page_n >= kMaxPages) {
+        return;
+      }
+      current = &pages[page_n++];
+      current->section = kSecOther;
+      current->nrows = 0;
+      current->rows[0] = RowPlan{false, -1, -1};
+      current->rows[1] = RowPlan{false, -1, -1};
+    }
+    RowPlan* row = &current->rows[current->nrows];
+    row->shutter = false;
+    row->a = idxs[i++];
+    row->b = -1;
+    if (i < n) {
+      row->b = idxs[i++];
+    }
+    current->nrows++;
+  }
 }
 
 void rebuild_pages() {
   page_n = 0;
-  for (int section = kSecFav; section <= kSecOther; ++section) {
+  for (int section = kSecFav; section <= kSecShutter; ++section) {
     int idxs[kLoxoneControlCap];
     int n = 0;
     for (size_t i = 0; i < control_count; ++i) {
@@ -232,8 +264,36 @@ void rebuild_pages() {
       }
     }
     pack_indices(static_cast<Section>(section), idxs, n);
+    if (!has_section(static_cast<Section>(section))) {
+      add_empty_page(static_cast<Section>(section));
+    }
   }
-  place_relay();
+  int idxs[kLoxoneControlCap];
+  int n = 0;
+  for (size_t i = 0; i < control_count; ++i) {
+    if (section_of(controls[i]) == kSecOther) {
+      idxs[n++] = static_cast<int>(i);
+    }
+  }
+  pack_other(idxs, n);
+}
+
+int first_content_page() {
+  for (int i = 0; i < page_n; ++i) {
+    if (pages[i].nrows > 0) {
+      return i;
+    }
+  }
+  return 0;
+}
+
+int first_page_of(Section section) {
+  for (int i = 0; i < page_n; ++i) {
+    if (pages[i].section == section) {
+      return i;
+    }
+  }
+  return 0;
 }
 
 bool index_on_page(int index) {
@@ -387,6 +447,34 @@ void show_shutter_row(int row_slot, int index) {
   lv_label_set_text(shutter_pos[row_slot], pos);
 }
 
+const char* empty_text(Section section) {
+  switch (section) {
+    case kSecFav:
+      return "Keine Favoriten";
+    case kSecLight:
+      return "Keine Lichter";
+    case kSecShutter:
+      return "Keine Storen";
+    default:
+      return "Keine weiteren Steuerungen";
+  }
+}
+
+void style_section_tab(int index, bool active) {
+  lv_obj_t* btn = section_btn[index];
+  lv_color_t bg = lv_color_hex(active ? section_color(static_cast<Section>(index)) : 0x1A222B);
+  lv_color_t fg = lv_color_hex(active ? 0x14202A : 0xD5DDE4);
+  lv_obj_set_style_bg_color(btn, bg, 0);
+  lv_obj_set_style_bg_color(btn, bg, LV_STATE_PRESSED);
+  lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(btn, 12, 0);
+  lv_obj_set_style_border_width(btn, active ? 0 : 1, 0);
+  lv_obj_set_style_border_color(btn, lv_color_hex(0x3A4654), 0);
+  lv_obj_set_style_shadow_width(btn, 0, 0);
+  lv_obj_set_style_pad_all(btn, 0, 0);
+  lv_obj_set_style_text_color(section_lbl[index], fg, 0);
+}
+
 void refresh_tiles() {
   int pages_n = page_count();
   if (page >= pages_n) {
@@ -401,8 +489,11 @@ void refresh_tiles() {
   for (int row_slot = 0; row_slot < kRowsPerPage; ++row_slot) {
     hide(shutter_box[row_slot]);
   }
+  hide(heading);
+  Section current_section = kSecFav;
   if (page_n > 0 && page < page_n) {
     const PagePlan& current = pages[page];
+    current_section = current.section;
     lv_label_set_text(heading, section_name(current.section));
     lv_obj_set_style_text_color(heading, lv_color_hex(section_color(current.section)), 0);
     for (int row_slot = 0; row_slot < current.nrows; ++row_slot) {
@@ -417,9 +508,19 @@ void refresh_tiles() {
         show_switch_tile(row_slot * 2 + 1, current.rows[row_slot].b);
       }
     }
+    if (current.nrows == 0) {
+      lv_label_set_text(empty_hint, empty_text(current.section));
+      show(empty_hint);
+    } else {
+      hide(empty_hint);
+    }
+  }
+  for (int i = 0; i < 4; ++i) {
+    style_section_tab(i, static_cast<int>(current_section) == i);
+    show(section_btn[i]);
   }
 
-  if (control_count == 0 || pages_n <= 1) {
+  if (pages_n <= 1) {
     hide(prev_btn);
     hide(next_btn);
     hide(page_label);
@@ -454,6 +555,11 @@ void set_grid_visible(bool visible) {
     hide(prev_btn);
     hide(next_btn);
     hide(page_label);
+    hide(empty_hint);
+    for (int i = 0; i < 4; ++i) {
+      hide(section_btn[i]);
+    }
+    show(heading);
     return;
   }
   refresh_tiles();
@@ -522,6 +628,21 @@ void on_shutter(lv_event_t* event) {
   int index = current.rows[row_slot].a;
   queue_command(index, kShutterCommand[which]);
   lv_label_set_text(shutter_pos[row_slot], "Sende...");
+}
+
+void on_section(lv_event_t* event) {
+  int which = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(event)));
+  if (which < kSecFav || which > kSecOther) {
+    return;
+  }
+  int target = first_page_of(static_cast<Section>(which));
+  if (page == target) {
+    return;
+  }
+  page = target;
+  arm_visible_reads();
+  refresh_tiles();
+  publish_status();
 }
 
 void on_prev(lv_event_t*) {
@@ -629,6 +750,22 @@ void ui_init() {
   lv_label_set_long_mode(status, LV_LABEL_LONG_DOT);
   lv_label_set_text(status, "");
 
+  for (int i = 0; i < 4; ++i) {
+    lv_obj_t* btn = lv_btn_create(screen);
+    lv_obj_set_pos(btn, 8 + i * 118, 6);
+    lv_obj_set_size(btn, 110, 34);
+    lv_obj_add_event_cb(btn, on_section, LV_EVENT_CLICKED, reinterpret_cast<void*>(static_cast<intptr_t>(i)));
+    section_btn[i] = btn;
+    section_lbl[i] = make_label(btn, &font_dejavu_14, lv_color_hex(0xD5DDE4));
+    lv_label_set_text(section_lbl[i], section_name(static_cast<Section>(i)));
+    lv_obj_set_width(section_lbl[i], 102);
+    lv_label_set_long_mode(section_lbl[i], LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_align(section_lbl[i], LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_center(section_lbl[i]);
+    style_section_tab(i, false);
+    hide(btn);
+  }
+
   for (int slot = 0; slot < kPerPage; ++slot) {
     int col = slot % 2;
     int row = slot / 2;
@@ -714,6 +851,13 @@ void ui_init() {
   hide(next_btn);
   hide(page_label);
 
+  empty_hint = make_label(screen, &font_dejavu_20, lv_color_hex(0xA8B3BD));
+  lv_obj_set_width(empty_hint, 440);
+  lv_label_set_long_mode(empty_hint, LV_LABEL_LONG_WRAP);
+  lv_obj_set_style_text_align(empty_hint, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(empty_hint, LV_ALIGN_CENTER, 0, -20);
+  hide(empty_hint);
+
   message = lv_obj_create(screen);
   lv_obj_set_pos(message, 16, 88);
   lv_obj_set_size(message, 448, 376);
@@ -746,6 +890,8 @@ void ui_init() {
 }
 
 void ui_show_message(const char* title, const char* body, bool retry) {
+  lv_label_set_text(heading, "Loxone");
+  lv_obj_set_style_text_color(heading, lv_color_hex(0xF2F5F7), 0);
   lv_label_set_text(message_title, title != nullptr ? title : "");
   lv_label_set_text(message_body, body != nullptr ? body : "");
   if (retry) {
@@ -777,6 +923,8 @@ void ui_show_controls(const LoxoneControl* items, size_t count, size_t supported
     needs_read[i] = has_status(controls[i]);
   }
   rebuild_pages();
+  page = first_content_page();
+  Serial.printf("UI screens %d, Sonstiges starts at %d\n", page_n, first_page_of(kSecOther) + 1);
   hide(message);
   arm_visible_reads();
   set_grid_visible(true);
