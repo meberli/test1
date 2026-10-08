@@ -34,20 +34,48 @@ bool is_switch_type(const char* type) {
 
 bool is_shutter_type(const char* type) { return strcmp(type, "Jalousie") == 0; }
 
-// states.<key> is a uuid. Missing or unsafe ids leave the control without a live value.
+const char* state_text(JsonObject states, const char* key) {
+  if (states.isNull() || key == nullptr || !states.containsKey(key)) {
+    return "";
+  }
+  JsonVariant field = states[key];
+  if (field.is<const char*>()) {
+    return field.as<const char*>();
+  }
+  if (field.is<JsonArray>()) {
+    JsonVariant first = field[0];
+    if (first.is<const char*>()) {
+      return first.as<const char*>();
+    }
+  }
+  return "";
+}
+
+// states.<key> is a uuid. Some controls publish that uuid as a one-element list.
 void copy_state(LoxoneControl* dst, JsonObject ctrl, const char* key, LoxoneStateKind kind) {
   dst->state[0] = '\0';
   dst->state_kind = kLoxoneStateNone;
-  JsonObject states = ctrl["states"].as<JsonObject>();
-  if (states.isNull() || !states.containsKey(key)) {
-    return;
-  }
-  const char* id = states[key] | "";
+  const char* id = state_text(ctrl["states"].as<JsonObject>(), key);
   if (!loxone_id_ok(id, sizeof(dst->state))) {
     return;
   }
   copy_trunc(dst->state, sizeof(dst->state), id);
   dst->state_kind = kind;
+}
+
+bool read_favorite(JsonObject ctrl) {
+  JsonVariant fav = ctrl["isFavorite"];
+  if (fav.is<bool>()) {
+    return fav.as<bool>();
+  }
+  if (fav.is<int>()) {
+    return fav.as<int>() != 0;
+  }
+  if (fav.is<const char*>()) {
+    const char* text = fav.as<const char*>();
+    return strcmp(text, "true") == 0 || strcmp(text, "1") == 0;
+  }
+  return false;
 }
 
 void assign_state(LoxoneControl* dst, JsonObject ctrl, const char* type) {
@@ -64,6 +92,9 @@ void assign_state(LoxoneControl* dst, JsonObject ctrl, const char* type) {
     copy_state(dst, ctrl, "position", kLoxoneStatePosition);
   } else if (strcmp(type, "LightController") == 0) {
     copy_state(dst, ctrl, "activeScene", kLoxoneStateScene);
+  } else if (strcmp(type, "TimedSwitch") == 0) {
+    // 0 = off, -1 = held on, otherwise the stairwell timer is still running.
+    copy_state(dst, ctrl, "deactivationDelay", kLoxoneStateScene);
   } else {
     copy_state(dst, ctrl, "active", kLoxoneStateActive);
   }
@@ -184,6 +215,7 @@ bool loxone_parse_structure(const uint8_t* json, size_t length, LoxoneControl* o
     copy_trunc(out[count].room, sizeof(out[count].room), room);
     copy_trunc(out[count].action, sizeof(out[count].action), action);
     out[count].kind = kind;
+    out[count].favorite = read_favorite(ctrl);
     assign_state(&out[count], ctrl, type);
     count++;
   }

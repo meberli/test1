@@ -123,27 +123,18 @@ void poll() {
       }
       LoxoneCommandRequest command;
       if (ui_take_command(&command)) {
-        if (strcmp(command.command, "Stop") == 0) {
-          LoxoneHttpResult up = loxone_send_command(*auth, command.action, "UpOff");
-          LoxoneHttpResult down = loxone_send_command(*auth, command.action, "DownOff");
-          bool ok = up.ok || down.ok;
-          const char* detail = up.detail[0] != '\0' ? up.detail : down.detail;
-          Serial.printf("Command Stop -> %s\n", ok ? "ok" : detail);
-          ui_command_finished(command.index, ok, "Stop", ok ? "Stopped" : detail);
-        } else {
-          LoxoneHttpResult result = loxone_send_command(*auth, command.action, command.command);
-          Serial.printf("Command %s -> %s\n", command.command, result.ok ? "ok" : result.detail);
-          ui_command_finished(command.index, result.ok, command.command, result.detail);
-        }
+        LoxoneHttpResult result = loxone_send_command(*auth, command.action, command.command);
+        Serial.printf("Command %s -> %s\n", command.command, result.ok ? "ok" : result.detail);
+        ui_command_finished(command.index, result.ok, command.command, result.detail);
       } else {
-        int index = -1;
-        char state_id[40];
-        if (ui_take_state(&index, state_id, sizeof(state_id))) {
+        LoxoneStateRequest state;
+        if (ui_take_state(&state)) {
           char value[64];
-          LoxoneHttpResult result = loxone_read_state(*auth, state_id, value, sizeof(value));
-          Serial.printf("State %d -> %s (%s)\n", index, result.ok ? value : "-",
+          LoxoneHttpResult result =
+              loxone_read_state(*auth, state.action, state.state, state.kind, value, sizeof(value));
+          Serial.printf("State %d -> %s (%s)\n", state.index, result.ok ? value : "-",
                         result.ok ? "ok" : result.detail);
-          ui_state_finished(index, result.ok, result.ok ? value : nullptr);
+          ui_state_finished(state.index, result.ok, result.ok ? value : nullptr);
         }
       }
       break;

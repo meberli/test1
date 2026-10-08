@@ -25,9 +25,10 @@ struct LoxoneControl {
   char state[40];
   LoxoneKind kind;
   LoxoneStateKind state_kind;
+  bool favorite;
 };
 
-constexpr size_t kLoxoneControlCap = 32;
+constexpr size_t kLoxoneControlCap = 48;
 
 // Ids that are safe to place in a Miniserver URL path.
 inline bool loxone_id_ok(const char* s, size_t max_len) {

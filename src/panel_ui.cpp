@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "font_dejavu.h"
 
@@ -20,11 +21,14 @@ constexpr int kTileW = 222;
 constexpr int kTileH = 140;
 constexpr int kRowsPerPage = 2;
 constexpr int kPerPage = 4;
+constexpr int kMaxPages = 32;
 constexpr uint32_t kShutterRereadMs = 3000;
 
-const char* kShutterLabel[3] = {"Up", "Stop", "Down"};
-const char* kShutterCommand[3] = {"FullUp", "Stop", "FullDown"};
-const uint32_t kShutterColor[3] = {0x245A8D, 0x8A6230, 0x1F6B45};
+enum Section : uint8_t { kSecFav = 0, kSecLight = 1, kSecShutter = 2, kSecOther = 3 };
+
+const char* kShutterLabel[2] = {"Auf", "Ab"};
+const char* kShutterCommand[2] = {"FullUp", "FullDown"};
+const uint32_t kShutterColor[2] = {0x245A8D, 0x1F6B45};
 
 lv_obj_t* heading = nullptr;
 lv_obj_t* status = nullptr;
@@ -48,19 +52,25 @@ struct RowPlan {
   int b;
 };
 
+struct PagePlan {
+  Section section;
+  int nrows;
+  RowPlan rows[kRowsPerPage];
+};
+
 LoxoneControl controls[kLoxoneControlCap];
 size_t control_count = 0;
-size_t supported_count = 0;
-RowPlan rows[kLoxoneControlCap];
-int row_count = 0;
+char server_name[48] = "";
+PagePlan pages[kMaxPages];
+int page_n = 0;
 int page = 0;
 bool known_on[kLoxoneControlCap] = {};
 bool known[kLoxoneControlCap] = {};
-bool state_queried[kLoxoneControlCap] = {};
+bool needs_read[kLoxoneControlCap] = {};
+bool prefer[kLoxoneControlCap] = {};
 bool moving[kLoxoneControlCap] = {};
 int position_pct[kLoxoneControlCap] = {};
 uint32_t reread_after[kLoxoneControlCap] = {};
-bool settling = false;
 bool command_pending = false;
 LoxoneCommandRequest pending = {};
 bool retry_pending = false;
@@ -78,34 +88,165 @@ void show(lv_obj_t* obj) { lv_obj_clear_flag(obj, LV_OBJ_FLAG_HIDDEN); }
 
 int row_y(int row_slot) { return kHeaderH + kMargin + row_slot * (kTileH + kMargin); }
 
-int page_count() {
-  if (row_count <= 0) {
-    return 1;
+const char* section_name(Section section) {
+  switch (section) {
+    case kSecFav:
+      return "Favoriten";
+    case kSecLight:
+      return "Licht";
+    case kSecShutter:
+      return "Storen";
+    default:
+      return "Sonstiges";
   }
-  return (row_count + kRowsPerPage - 1) / kRowsPerPage;
 }
 
-void rebuild_rows() {
-  row_count = 0;
-  size_t i = 0;
-  while (i < control_count && row_count < static_cast<int>(kLoxoneControlCap)) {
-    if (controls[i].kind == kLoxoneShutter) {
-      rows[row_count].shutter = true;
-      rows[row_count].a = static_cast<int>(i);
-      rows[row_count].b = -1;
-      row_count++;
+uint32_t section_color(Section section) {
+  switch (section) {
+    case kSecFav:
+      return 0xF4C15D;
+    case kSecShutter:
+      return 0x9EC7E8;
+    case kSecOther:
+      return 0xC5CED6;
+    default:
+      return 0xF2F5F7;
+  }
+}
+
+Section section_of(const LoxoneControl& ctrl) {
+  if (ctrl.favorite) {
+    return kSecFav;
+  }
+  if (ctrl.kind == kLoxoneSwitch) {
+    return kSecLight;
+  }
+  if (ctrl.kind == kLoxoneShutter) {
+    return kSecShutter;
+  }
+  return kSecOther;
+}
+
+bool has_status(const LoxoneControl& ctrl) {
+  return ctrl.kind == kLoxoneSwitch || ctrl.kind == kLoxoneShutter;
+}
+
+int page_count() { return page_n > 0 ? page_n : 1; }
+
+int compare_index(const void* left, const void* right) {
+  int a = *static_cast<const int*>(left);
+  int b = *static_cast<const int*>(right);
+  int room = strcasecmp(controls[a].room, controls[b].room);
+  if (room != 0) {
+    return room;
+  }
+  int shutter_a = controls[a].kind == kLoxoneShutter ? 1 : 0;
+  int shutter_b = controls[b].kind == kLoxoneShutter ? 1 : 0;
+  if (shutter_a != shutter_b) {
+    return shutter_a - shutter_b;
+  }
+  return strcasecmp(controls[a].name, controls[b].name);
+}
+
+void pack_indices(Section section, int* idxs, int n) {
+  if (n <= 0 || page_n >= kMaxPages) {
+    return;
+  }
+  qsort(idxs, static_cast<size_t>(n), sizeof(int), compare_index);
+  PagePlan* current = &pages[page_n++];
+  current->section = section;
+  current->nrows = 0;
+  int i = 0;
+  while (i < n) {
+    if (current->nrows == kRowsPerPage) {
+      if (page_n >= kMaxPages) {
+        return;
+      }
+      current = &pages[page_n++];
+      current->section = section;
+      current->nrows = 0;
+    }
+    RowPlan* row = &current->rows[current->nrows];
+    if (controls[idxs[i]].kind == kLoxoneShutter) {
+      row->shutter = true;
+      row->a = idxs[i];
+      row->b = -1;
+      current->nrows++;
       i++;
       continue;
     }
-    int next = -1;
-    if (i + 1 < control_count && controls[i + 1].kind != kLoxoneShutter) {
-      next = static_cast<int>(i + 1);
+    row->shutter = false;
+    row->a = idxs[i];
+    row->b = -1;
+    i++;
+    if (i < n && controls[idxs[i]].kind != kLoxoneShutter) {
+      row->b = idxs[i];
+      i++;
     }
-    rows[row_count].shutter = false;
-    rows[row_count].a = static_cast<int>(i);
-    rows[row_count].b = next;
-    row_count++;
-    i += next >= 0 ? 2 : 1;
+    current->nrows++;
+  }
+}
+
+void rebuild_pages() {
+  page_n = 0;
+  for (int section = kSecFav; section <= kSecOther; ++section) {
+    int idxs[kLoxoneControlCap];
+    int n = 0;
+    for (size_t i = 0; i < control_count; ++i) {
+      if (section_of(controls[i]) == static_cast<Section>(section)) {
+        idxs[n++] = static_cast<int>(i);
+      }
+    }
+    pack_indices(static_cast<Section>(section), idxs, n);
+  }
+}
+
+bool index_on_page(int index) {
+  if (page < 0 || page >= page_n) {
+    return false;
+  }
+  const PagePlan& current = pages[page];
+  for (int row = 0; row < current.nrows; ++row) {
+    if (current.rows[row].a == index || current.rows[row].b == index) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool visible_pending() {
+  for (size_t i = 0; i < control_count; ++i) {
+    if (needs_read[i] && reread_after[i] == 0 && index_on_page(static_cast<int>(i))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void publish_status() {
+  if (visible_pending()) {
+    ui_set_status("Aktualisiere...");
+    return;
+  }
+  for (size_t i = 0; i < control_count; ++i) {
+    if (index_on_page(static_cast<int>(i)) && has_status(controls[i]) && !known[i]) {
+      ui_set_status("Status nicht verfügbar");
+      return;
+    }
+  }
+  ui_set_status(server_name);
+}
+
+void arm_visible_reads() {
+  for (size_t i = 0; i < control_count; ++i) {
+    prefer[i] = false;
+    if (!index_on_page(static_cast<int>(i)) || !has_status(controls[i])) {
+      continue;
+    }
+    if (reread_after[i] == 0) {
+      needs_read[i] = true;
+    }
+    prefer[i] = true;
   }
 }
 
@@ -133,33 +274,39 @@ void style_tile(lv_obj_t* btn, LoxoneKind kind, bool is_known, bool on) {
 
 void format_switch_sub(char* out, size_t n, int index) {
   const LoxoneControl& ctrl = controls[index];
-  const char* state_text = "...";
+  const char* mark = "";
   if (known[index]) {
-    state_text = known_on[index] ? "On" : "Off";
-  } else if (state_queried[index]) {
-    state_text = "n/a";
+    mark = known_on[index] ? "An" : "Aus";
+  } else if (needs_read[index]) {
+    mark = "...";
   }
-  if (ctrl.room[0] != '\0') {
-    snprintf(out, n, "%s - %s", ctrl.room, state_text);
+  if (ctrl.room[0] != '\0' && mark[0] != '\0') {
+    snprintf(out, n, "%s - %s", ctrl.room, mark);
+  } else if (ctrl.room[0] != '\0') {
+    snprintf(out, n, "%s", ctrl.room);
+  } else if (mark[0] != '\0') {
+    snprintf(out, n, "%s", mark);
+  } else if (ctrl.kind == kLoxonePulse) {
+    snprintf(out, n, "Taster");
   } else {
-    snprintf(out, n, "%s", state_text);
+    snprintf(out, n, "Licht");
   }
 }
 
 void format_shutter_pos(char* out, size_t n, int index) {
   if (moving[index]) {
-    snprintf(out, n, "Moving");
+    snprintf(out, n, "Bewegt");
     return;
   }
   if (!known[index]) {
-    snprintf(out, n, "%s", state_queried[index] ? "n/a" : "...");
+    snprintf(out, n, "%s", needs_read[index] ? "..." : "");
     return;
   }
   int pct = position_pct[index];
   if (pct <= 2) {
-    snprintf(out, n, "Open");
+    snprintf(out, n, "Offen");
   } else if (pct >= 98) {
-    snprintf(out, n, "Closed");
+    snprintf(out, n, "Geschlossen");
   } else {
     snprintf(out, n, "%d%%", pct);
   }
@@ -178,13 +325,7 @@ void show_switch_tile(int slot, int index) {
   const LoxoneControl& ctrl = controls[index];
   lv_label_set_text(tile_name[slot], ctrl.name);
   char sub[96];
-  if (ctrl.kind == kLoxoneSwitch) {
-    format_switch_sub(sub, sizeof(sub), index);
-  } else if (ctrl.room[0] != '\0') {
-    snprintf(sub, sizeof(sub), "%s", ctrl.room);
-  } else {
-    snprintf(sub, sizeof(sub), "Button");
-  }
+  format_switch_sub(sub, sizeof(sub), index);
   lv_label_set_text(tile_sub[slot], sub);
   style_tile(tiles[slot], ctrl.kind, known[index], known_on[index]);
 }
@@ -199,46 +340,10 @@ void show_shutter_row(int row_slot, int index) {
   lv_label_set_text(shutter_pos[row_slot], pos);
 }
 
-void publish_load_status() {
-  if (!settling) {
-    return;
-  }
-  size_t pending = 0;
-  size_t readable = 0;
-  size_t unknown_switches = 0;
-  for (size_t i = 0; i < control_count; ++i) {
-    bool has_state = controls[i].state[0] != '\0' && controls[i].state_kind != kLoxoneStateNone;
-    if (has_state) {
-      readable++;
-    }
-    if (has_state && !state_queried[i] && reread_after[i] == 0) {
-      pending++;
-    }
-    if (controls[i].kind == kLoxoneSwitch && !known[i]) {
-      unknown_switches++;
-    }
-  }
-  if (pending > 0) {
-    ui_set_status("Reading status");
-    return;
-  }
-  settling = false;
-  if (supported_count > control_count) {
-    char line[64];
-    snprintf(line, sizeof(line), "Showing %u of %u", static_cast<unsigned>(control_count),
-             static_cast<unsigned>(supported_count));
-    ui_set_status(line);
-  } else if (readable > 0 && unknown_switches > 0) {
-    ui_set_status("Some lights did not report status");
-  } else {
-    ui_set_status("");
-  }
-}
-
 void refresh_tiles() {
-  int pages = page_count();
-  if (page >= pages) {
-    page = pages - 1;
+  int pages_n = page_count();
+  if (page >= pages_n) {
+    page = pages_n - 1;
   }
   if (page < 0) {
     page = 0;
@@ -248,43 +353,46 @@ void refresh_tiles() {
   }
   for (int row_slot = 0; row_slot < kRowsPerPage; ++row_slot) {
     hide(shutter_box[row_slot]);
-    int row_index = page * kRowsPerPage + row_slot;
-    if (row_index < 0 || row_index >= row_count) {
-      continue;
-    }
-    if (rows[row_index].shutter) {
-      show_shutter_row(row_slot, rows[row_index].a);
-      continue;
-    }
-    if (rows[row_index].a >= 0) {
-      show_switch_tile(row_slot * 2, rows[row_index].a);
-    }
-    if (rows[row_index].b >= 0) {
-      show_switch_tile(row_slot * 2 + 1, rows[row_index].b);
+  }
+  if (page_n > 0 && page < page_n) {
+    const PagePlan& current = pages[page];
+    lv_label_set_text(heading, section_name(current.section));
+    lv_obj_set_style_text_color(heading, lv_color_hex(section_color(current.section)), 0);
+    for (int row_slot = 0; row_slot < current.nrows; ++row_slot) {
+      if (current.rows[row_slot].shutter) {
+        show_shutter_row(row_slot, current.rows[row_slot].a);
+        continue;
+      }
+      if (current.rows[row_slot].a >= 0) {
+        show_switch_tile(row_slot * 2, current.rows[row_slot].a);
+      }
+      if (current.rows[row_slot].b >= 0) {
+        show_switch_tile(row_slot * 2 + 1, current.rows[row_slot].b);
+      }
     }
   }
 
-  if (control_count == 0 || pages <= 1) {
+  if (control_count == 0 || pages_n <= 1) {
     hide(prev_btn);
     hide(next_btn);
     hide(page_label);
+    return;
+  }
+  show(prev_btn);
+  show(next_btn);
+  show(page_label);
+  char text[16];
+  snprintf(text, sizeof(text), "%d / %d", page + 1, pages_n);
+  lv_label_set_text(page_label, text);
+  if (page == 0) {
+    lv_obj_add_state(prev_btn, LV_STATE_DISABLED);
   } else {
-    show(prev_btn);
-    show(next_btn);
-    show(page_label);
-    char text[16];
-    snprintf(text, sizeof(text), "%d / %d", page + 1, pages);
-    lv_label_set_text(page_label, text);
-    if (page == 0) {
-      lv_obj_add_state(prev_btn, LV_STATE_DISABLED);
-    } else {
-      lv_obj_clear_state(prev_btn, LV_STATE_DISABLED);
-    }
-    if (page + 1 >= pages) {
-      lv_obj_add_state(next_btn, LV_STATE_DISABLED);
-    } else {
-      lv_obj_clear_state(next_btn, LV_STATE_DISABLED);
-    }
+    lv_obj_clear_state(prev_btn, LV_STATE_DISABLED);
+  }
+  if (page + 1 >= pages_n) {
+    lv_obj_add_state(next_btn, LV_STATE_DISABLED);
+  } else {
+    lv_obj_clear_state(next_btn, LV_STATE_DISABLED);
   }
 }
 
@@ -305,13 +413,16 @@ void set_grid_visible(bool visible) {
 }
 
 int control_for_slot(int slot) {
-  int row_slot = slot / 2;
-  int col = slot % 2;
-  int row_index = page * kRowsPerPage + row_slot;
-  if (row_index < 0 || row_index >= row_count || rows[row_index].shutter) {
+  if (page < 0 || page >= page_n) {
     return -1;
   }
-  return col == 0 ? rows[row_index].a : rows[row_index].b;
+  int row_slot = slot / 2;
+  int col = slot % 2;
+  const PagePlan& current = pages[page];
+  if (row_slot < 0 || row_slot >= current.nrows || current.rows[row_slot].shutter) {
+    return -1;
+  }
+  return col == 0 ? current.rows[row_slot].a : current.rows[row_slot].b;
 }
 
 void queue_command(int index, const char* command) {
@@ -319,8 +430,8 @@ void queue_command(int index, const char* command) {
   snprintf(pending.command, sizeof(pending.command), "%s", command);
   pending.index = index;
   command_pending = true;
-  if (!settling) {
-    ui_set_status("Sending");
+  if (!visible_pending()) {
+    ui_set_status("Sende...");
   }
 }
 
@@ -339,7 +450,7 @@ void on_tile(lv_event_t* event) {
     command = (known[index] && known_on[index]) ? "Off" : "On";
   }
   queue_command(index, command);
-  lv_label_set_text(tile_sub[slot], "Sending");
+  lv_label_set_text(tile_sub[slot], "Sende...");
 }
 
 void on_shutter(lv_event_t* event) {
@@ -347,31 +458,35 @@ void on_shutter(lv_event_t* event) {
     return;
   }
   intptr_t tag = reinterpret_cast<intptr_t>(lv_event_get_user_data(event));
-  int row_slot = static_cast<int>(tag / 4);
-  int which = static_cast<int>(tag % 4);
-  if (row_slot < 0 || row_slot >= kRowsPerPage || which < 0 || which > 2) {
+  int row_slot = static_cast<int>(tag / 2);
+  int which = static_cast<int>(tag % 2);
+  if (page < 0 || page >= page_n || row_slot < 0 || row_slot >= kRowsPerPage || which < 0 || which > 1) {
     return;
   }
-  int row_index = page * kRowsPerPage + row_slot;
-  if (row_index < 0 || row_index >= row_count || !rows[row_index].shutter) {
+  const PagePlan& current = pages[page];
+  if (row_slot >= current.nrows || !current.rows[row_slot].shutter) {
     return;
   }
-  int index = rows[row_index].a;
+  int index = current.rows[row_slot].a;
   queue_command(index, kShutterCommand[which]);
-  lv_label_set_text(shutter_pos[row_slot], "Sending");
+  lv_label_set_text(shutter_pos[row_slot], "Sende...");
 }
 
 void on_prev(lv_event_t*) {
   if (page > 0) {
     page--;
+    arm_visible_reads();
     refresh_tiles();
+    publish_status();
   }
 }
 
 void on_next(lv_event_t*) {
   if (page + 1 < page_count()) {
     page++;
+    arm_visible_reads();
     refresh_tiles();
+    publish_status();
   }
 }
 
@@ -422,13 +537,26 @@ bool apply_state_value(int index, const char* value) {
     known[index] = true;
     return true;
   }
-  if (ctrl.state_kind == kLoxoneStateScene) {
-    known_on[index] = parsed != 0.f;
-  } else {
-    known_on[index] = parsed > 0.f;
-  }
+  known_on[index] = parsed != 0.f;
   known[index] = true;
   return true;
+}
+
+bool waiting_for_later(int index, uint32_t now) {
+  return reread_after[index] != 0 && static_cast<int32_t>(now - reread_after[index]) < 0;
+}
+
+int pick_state(bool preferred_only, uint32_t now) {
+  for (size_t i = 0; i < control_count; ++i) {
+    if (!needs_read[i] || waiting_for_later(static_cast<int>(i), now)) {
+      continue;
+    }
+    if (preferred_only && !prefer[i]) {
+      continue;
+    }
+    return static_cast<int>(i);
+  }
+  return -1;
 }
 
 }  // namespace
@@ -496,12 +624,12 @@ void ui_init() {
     shutter_pos[row_slot] = make_label(box, &font_dejavu_14, lv_color_hex(0xD5DDE4));
     lv_obj_align(shutter_pos[row_slot], LV_ALIGN_TOP_RIGHT, -12, 12);
 
-    for (int which = 0; which < 3; ++which) {
+    for (int which = 0; which < 2; ++which) {
       lv_obj_t* btn = lv_btn_create(box);
-      lv_obj_set_pos(btn, 8 + which * 148, 48);
-      lv_obj_set_size(btn, 140, 80);
+      lv_obj_set_pos(btn, 12 + which * 222, 46);
+      lv_obj_set_size(btn, 210, 82);
       style_shutter_button(btn, kShutterColor[which]);
-      intptr_t tag = static_cast<intptr_t>(row_slot * 4 + which);
+      intptr_t tag = static_cast<intptr_t>(row_slot * 2 + which);
       lv_obj_add_event_cb(btn, on_shutter, LV_EVENT_CLICKED, reinterpret_cast<void*>(tag));
       lv_obj_t* label = make_label(btn, &font_dejavu_20, lv_color_hex(0xFFFFFF));
       lv_label_set_text(label, kShutterLabel[which]);
@@ -516,7 +644,7 @@ void ui_init() {
   style_chrome_button(prev_btn);
   lv_obj_add_event_cb(prev_btn, on_prev, LV_EVENT_CLICKED, nullptr);
   lv_obj_t* prev_label = make_label(prev_btn, &font_dejavu_20, lv_color_hex(0xFFFFFF));
-  lv_label_set_text(prev_label, "Prev");
+  lv_label_set_text(prev_label, "Zurück");
   lv_obj_center(prev_label);
 
   next_btn = lv_btn_create(screen);
@@ -525,7 +653,7 @@ void ui_init() {
   style_chrome_button(next_btn);
   lv_obj_add_event_cb(next_btn, on_next, LV_EVENT_CLICKED, nullptr);
   lv_obj_t* next_label = make_label(next_btn, &font_dejavu_20, lv_color_hex(0xFFFFFF));
-  lv_label_set_text(next_label, "Next");
+  lv_label_set_text(next_label, "Weiter");
   lv_obj_center(next_label);
 
   page_label = make_label(screen, &font_dejavu_14, lv_color_hex(0xC5CED6));
@@ -577,40 +705,40 @@ void ui_show_message(const char* title, const char* body, bool retry) {
   set_grid_visible(false);
 }
 
-void ui_show_controls(const LoxoneControl* items, size_t count, size_t supported, const char* server_name) {
+void ui_show_controls(const LoxoneControl* items, size_t count, size_t supported, const char* server) {
   if (count > kLoxoneControlCap) {
     count = kLoxoneControlCap;
   }
   control_count = count;
-  supported_count = supported;
   page = 0;
   command_pending = false;
-  settling = true;
+  snprintf(server_name, sizeof(server_name), "%s", (server != nullptr && server[0] != '\0') ? server : "");
   memset(known, 0, sizeof(known));
   memset(known_on, 0, sizeof(known_on));
-  memset(state_queried, 0, sizeof(state_queried));
+  memset(needs_read, 0, sizeof(needs_read));
+  memset(prefer, 0, sizeof(prefer));
   memset(moving, 0, sizeof(moving));
   memset(position_pct, 0, sizeof(position_pct));
   memset(reread_after, 0, sizeof(reread_after));
   for (size_t i = 0; i < count; ++i) {
     controls[i] = items[i];
-    if (controls[i].state[0] == '\0' || controls[i].state_kind == kLoxoneStateNone) {
-      state_queried[i] = true;
-    }
+    needs_read[i] = has_status(controls[i]);
   }
-  rebuild_rows();
-  lv_label_set_text(heading, (server_name != nullptr && server_name[0] != '\0') ? server_name : "Loxone");
+  rebuild_pages();
   if (count == 0) {
-    settling = false;
-    ui_set_status("No controls to show");
+    lv_label_set_text(heading, server_name[0] != '\0' ? server_name : "Loxone");
+    lv_obj_set_style_text_color(heading, lv_color_hex(0xF2F5F7), 0);
+    ui_set_status("Keine Steuerungen");
     ui_show_message("Connected",
                     "The Miniserver answered, but LoxAPP3.json has no switch, light, button, or shutter controls.",
                     false);
     return;
   }
   hide(message);
+  arm_visible_reads();
   set_grid_visible(true);
-  publish_load_status();
+  publish_status();
+  (void)supported;
 }
 
 void ui_set_status(const char* text) { lv_label_set_text(status, text != nullptr ? text : ""); }
@@ -637,29 +765,31 @@ void ui_command_finished(int index, bool ok, const char* command, const char* de
     if (strcmp(command, "On") == 0) {
       known[index] = true;
       known_on[index] = true;
+      needs_read[index] = false;
     } else if (strcmp(command, "Off") == 0) {
       known[index] = true;
       known_on[index] = false;
+      needs_read[index] = false;
     } else if (controls[index].kind == kLoxoneShutter) {
       moving[index] = true;
+      needs_read[index] = true;
+      prefer[index] = true;
       reread_after[index] = millis() + kShutterRereadMs;
     }
   }
-  if (!settling) {
+  if (!visible_pending()) {
     if (ok) {
       if (command != nullptr && strcmp(command, "Pulse") == 0) {
-        ui_set_status("Pulse sent");
+        ui_set_status("Impuls gesendet");
       } else if (command != nullptr && strcmp(command, "FullUp") == 0) {
-        ui_set_status("Shutter up");
+        ui_set_status("Storen auf");
       } else if (command != nullptr && strcmp(command, "FullDown") == 0) {
-        ui_set_status("Shutter down");
-      } else if (command != nullptr && strcmp(command, "Stop") == 0) {
-        ui_set_status("Shutter stopped");
+        ui_set_status("Storen ab");
       } else {
-        ui_set_status("Command sent");
+        ui_set_status("Gesendet");
       }
     } else {
-      ui_set_status(detail != nullptr && detail[0] != '\0' ? detail : "Command failed");
+      ui_set_status(detail != nullptr && detail[0] != '\0' ? detail : "Befehl fehlgeschlagen");
     }
   }
   if (message != nullptr && lv_obj_has_flag(message, LV_OBJ_FLAG_HIDDEN)) {
@@ -667,40 +797,36 @@ void ui_command_finished(int index, bool ok, const char* command, const char* de
   }
 }
 
-bool ui_take_state(int* index, char* state_id, size_t state_n) {
-  if (index == nullptr || state_id == nullptr || state_n == 0 || command_pending) {
+bool ui_take_state(LoxoneStateRequest* out) {
+  if (out == nullptr || command_pending) {
     return false;
   }
   uint32_t now = millis();
-  for (size_t i = 0; i < control_count; ++i) {
-    if (controls[i].state[0] == '\0' || controls[i].state_kind == kLoxoneStateNone) {
-      continue;
-    }
-    if (reread_after[i] != 0 && static_cast<int32_t>(now - reread_after[i]) < 0) {
-      continue;
-    }
-    bool due = reread_after[i] != 0;
-    if (state_queried[i] && !due) {
-      continue;
-    }
-    *index = static_cast<int>(i);
-    snprintf(state_id, state_n, "%s", controls[i].state);
-    return true;
+  int index = pick_state(true, now);
+  if (index < 0) {
+    index = pick_state(false, now);
   }
-  return false;
+  if (index < 0) {
+    return false;
+  }
+  out->index = index;
+  snprintf(out->action, sizeof(out->action), "%s", controls[index].action);
+  snprintf(out->state, sizeof(out->state), "%s", controls[index].state);
+  out->kind = controls[index].kind;
+  return true;
 }
 
 void ui_state_finished(int index, bool ok, const char* value) {
   if (index < 0 || static_cast<size_t>(index) >= control_count) {
     return;
   }
-  state_queried[index] = true;
+  needs_read[index] = false;
   reread_after[index] = 0;
   moving[index] = false;
   if (ok) {
     apply_state_value(index, value);
   }
-  publish_load_status();
+  publish_status();
   if (message != nullptr && lv_obj_has_flag(message, LV_OBJ_FLAG_HIDDEN)) {
     refresh_tiles();
   }
