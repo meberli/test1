@@ -16,6 +16,11 @@
 #include "panel_hw.h"
 #include "panel_ui.h"
 #include "board_pins.h"
+#include "test_harness.h"
+
+#ifndef SERIAL_BAUD
+#define SERIAL_BAUD 115200
+#endif
 
 #if defined(ARDUINO_USB_CDC_ON_BOOT) && ARDUINO_USB_CDC_ON_BOOT
 #error USB CDC must stay off: GPIO19/20 are touch and LCD pins, and USB-C is the CH340 UART
@@ -205,7 +210,11 @@ void poll() {
 }  // namespace
 
 void setup() {
-  Serial.begin(115200);
+  #ifdef TEST_HARNESS
+  Serial.setTxBufferSize(16384);
+  Serial.setRxBufferSize(1024);
+#endif
+  Serial.begin(SERIAL_BAUD);
   delay(200);
   Serial.println("ESP32-4848S040C_I_Y_1 Loxone panel");
   Serial.printf("Flash %u bytes, PSRAM %u bytes\n", static_cast<unsigned>(ESP.getFlashChipSize()),
@@ -266,6 +275,7 @@ void loop() {
   lv_tick_inc(now - last_ms);
   last_ms = now;
   lv_timer_handler();
+  harness_poll();
   poll();
   lv_timer_handler();
   delay(5);

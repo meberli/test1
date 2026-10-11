@@ -8,6 +8,7 @@
 #include <lvgl.h>
 
 #include "board_pins.h"
+#include "test_harness.h"
 
 namespace {
 
@@ -35,6 +36,9 @@ void panel_flush(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* color) {
 }
 
 void panel_touch_read(lv_indev_drv_t*, lv_indev_data_t* data) {
+  if (harness_touch_override(data)) {
+    return;
+  }
   if (!touch_ok) {
     data->state = LV_INDEV_STATE_RELEASED;
     return;
