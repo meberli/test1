@@ -507,7 +507,9 @@ void format_shutter_pos(char* out, size_t n, int index) {
 }
 
 void fill_title(char* out, size_t n, const LoxoneControl& ctrl) {
-  if (ctrl.room[0] != '\0') {
+  // "Room · Name", but only the name when both are the same
+  // (e.g. a shutter called "Gästezimmer" in room "Gästezimmer").
+  if (ctrl.room[0] != '\0' && strcasecmp(ctrl.room, ctrl.name) != 0) {
     snprintf(out, n, "%s · %s", ctrl.room, ctrl.name);
   } else {
     snprintf(out, n, "%s", ctrl.name);

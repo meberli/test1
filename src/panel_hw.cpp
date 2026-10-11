@@ -10,6 +10,26 @@
 #include "board_pins.h"
 #include "test_harness.h"
 
+// Pins set to -1 (GT911 INT/RST on this board) reach the core as 255 via the
+// uint8_t APIs. TAMC_GT911::reset() toggles them unconditionally, which logs
+// "Invalid pin selected" and gpio_num errors at boot. These strong
+// definitions replace the core's weak pinMode/digitalWrite and skip pins
+// that do not exist; real pins go straight to the core implementation.
+extern "C" void __pinMode(uint8_t pin, uint8_t mode);
+extern "C" void __digitalWrite(uint8_t pin, uint8_t val);
+
+extern "C" void pinMode(uint8_t pin, uint8_t mode) {
+  if (pin < SOC_GPIO_PIN_COUNT) {
+    __pinMode(pin, mode);
+  }
+}
+
+extern "C" void digitalWrite(uint8_t pin, uint8_t val) {
+  if (pin < SOC_GPIO_PIN_COUNT) {
+    __digitalWrite(pin, val);
+  }
+}
+
 namespace {
 
 Arduino_DataBus* bus = nullptr;

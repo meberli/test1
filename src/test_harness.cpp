@@ -39,9 +39,10 @@ void start_move(int ax, int ay, int bx, int by, uint32_t ms, bool release) {
   sim = Sim::Move;
 }
 
-// Screenshot transfer. The CH340 link on this board drops short runs of bytes
-// at 921600 (460800 is clean, the default); to be safe, so the image goes out as base64 text lines,
-// each with its own CRC32, and the host asks again for lines it lost:
+// Screenshot transfer. At 921600 the CH340 link drops short runs of bytes;
+// 460800 (the default here) measured clean. To stay safe at any speed, the
+// image goes out as base64 text lines, each with its own CRC32, and the host
+// asks again for any line it lost:
 //   SHOT            -> SHOT_BEGIN <w> <h> <len> <line_bytes>
 //                      L <offset> <crc32 hex> <base64>   (one per line_bytes)
 //                      SHOT_END
