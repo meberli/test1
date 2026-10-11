@@ -1,5 +1,8 @@
 #include <Arduino.h>
+#include <ArduinoJson.h>
+#include <HTTPClient.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <esp_heap_caps.h>
 #include <lvgl.h>
 
@@ -34,6 +37,46 @@ constexpr size_t kStructureCap = 768 * 1024;
 LoxoneBasicAuthorizer basic_auth(LOXONE_USER, LOXONE_PASSWORD);
 LoxoneTokenAuthorizer token_auth;
 LoxoneAuthorizer* auth = nullptr;
+uint32_t next_weather_ms = 0;
+
+// Buchs, St. Gallen. Open-Meteo needs no key. TLS is not pinned.
+bool fetch_buchs_weather(int* temp_c, int* code) {
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.setConnectTimeout(8000);
+  http.setTimeout(8000);
+  const char* url =
+      "https://api.open-meteo.com/v1/forecast?latitude=47.3925&longitude=9.4728"
+      "&current=temperature_2m,weather_code&timezone=Europe%2FZurich";
+  if (!http.begin(client, url)) {
+    return false;
+  }
+  int status = http.GET();
+  if (status != 200) {
+    Serial.printf("Weather HTTP %d\n", status);
+    http.end();
+    return false;
+  }
+  String payload = http.getString();
+  http.end();
+  StaticJsonDocument<256> filter;
+  filter["current"]["temperature_2m"] = true;
+  filter["current"]["weather_code"] = true;
+  StaticJsonDocument<192> doc;
+  if (deserializeJson(doc, payload, DeserializationOption::Filter(filter))) {
+    return false;
+  }
+  JsonVariant temp = doc["current"]["temperature_2m"];
+  JsonVariant wcode = doc["current"]["weather_code"];
+  if (temp.isNull() || wcode.isNull()) {
+    return false;
+  }
+  float value = temp.as<float>();
+  *temp_c = static_cast<int>(value >= 0.f ? value + 0.5f : value - 0.5f);
+  *code = wcode.as<int>();
+  return true;
+}
 
 const char* kNotConfiguredBody =
     "Wi-Fi and Miniserver settings are missing.\n\n"
@@ -41,8 +84,9 @@ const char* kNotConfiguredBody =
     "to include/panel_config.h, fill in the\n"
     "local Miniserver, then rebuild and\n"
     "flash over USB.\n\n"
-    "Relay 1 stays off until Relais\n"
-    "on Sonstiges is tapped.";
+    "Relay 1 stays off until you open\n"
+    "Sonstiges on the home screen\n"
+    "and tap Relais.";
 
 void start_wifi() {
   WiFi.persistent(false);
@@ -136,6 +180,13 @@ void poll() {
           Serial.printf("State %d -> %s (%s)\n", state.index, result.ok ? value : "-",
                         result.ok ? "ok" : result.detail);
           ui_state_finished(state.index, result.ok, result.ok ? value : nullptr);
+        } else if (static_cast<int32_t>(millis() - next_weather_ms) >= 0) {
+          int temp_c = 0;
+          int code = 0;
+          bool ok = fetch_buchs_weather(&temp_c, &code);
+          ui_set_weather(ok, temp_c, code);
+          next_weather_ms = millis() + (ok ? 600000UL : 60000UL);
+          Serial.printf("Weather Buchs %s\n", ok ? "ok" : "unavailable");
         }
       }
       break;

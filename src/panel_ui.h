@@ -29,3 +29,6 @@ void ui_command_finished(int index, bool ok, const char* command, const char* de
 // read each time that page is opened.
 bool ui_take_state(LoxoneStateRequest* out);
 void ui_state_finished(int index, bool ok, const char* value);
+
+// Home-screen weather for Buchs SG. code is a WMO weather code.
+void ui_set_weather(bool ok, int temp_c, int code);

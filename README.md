@@ -76,20 +76,21 @@ Relay polarity is the ha5dzs setup write: `digitalWrite(RELAY1, LOW)` with the c
 
 PlatformIO project, Arduino-ESP32, the published Arduino_GFX 1.6.0 device for this panel, LVGL 8.4, and TAMC_GT911 1.0.2. That is the same display stack as the Arduino_GFX device entry and the ha5dzs PlatformIO port.
 
-The screen is 480×480. Light tiles are 222×140 px. A shutter uses the full width of one row, with Auf and Ab buttons at 210×82. Page buttons are 140×72, and the retry button is 400×88.
+The screen is 480×480. The look follows the dark [Home Assistant visionOS theme](https://github.com/Nezz/homeassistant-visionos-theme): warm black background, translucent cards, 24 px corners, and the Apple system colors from that theme (orange, yellow, cyan, purple, green). LVGL on this panel cannot blur the backdrop, so the glass is a translucent card over a soft gradient.
 
-Room names, control names, and the Miniserver name are drawn with DejaVu Sans covering Latin-1 (U+00A0–U+00FF), including ä, ö, ü, Ä, Ö, Ü, and ß.
+Room names, control names, and the weather text use DejaVu Sans covering Latin-1 (U+00A0–U+00FF), including ä, ö, ü, Ä, Ö, Ü, and ß.
 
-- With no `include/panel_config.h`, or with the Wi-Fi SSID, Miniserver host, or user left empty, the home screen is a **Not configured** panel. It tells you which file to copy. It does not pretend the house is online.
+- With no `include/panel_config.h`, or with the Wi-Fi SSID, Miniserver host, or user left empty, the screen says it is not configured. It does not pretend the house is online.
 - With a config file, it joins Wi-Fi and GETs `/data/LoxAPP3.json` with HTTP basic auth.
-- Every home screen has four section buttons: Favoriten, Licht, Storen, Sonstiges. The first screen is still Favoriten when any control is marked `isFavorite`; otherwise it opens on the first section that has tiles. Weiter moves between pages. Up to 48 Loxone controls. Favorites are not repeated in the later groups.
-- Sonstiges is always present. Its first tile is Relais, even when Loxone has no pushbuttons. Relais is not a Loxone control and does not send a Miniserver command. It toggles relay 1 on GPIO40 and shows An or Aus from the pin level. Boot writes the pin low, which is off, and the pin changes only when that tile is tapped. GPIO1 and GPIO2 are not configured.
+- The home screen shows the current weather in Buchs, St. Gallen, and four category cards: Favoriten, Licht, Storen, Sonstiges. Weather comes from Open-Meteo (`47.3925 N, 9.4728 E`) over HTTPS with no API key. The Miniserver itself stays on local HTTP.
+- Tap a category to open it. Swipe left or right to move between pages in that category. A swipe that starts on the right edge and moves left goes back to the home screen. A swipe that starts on the bottom edge and moves up also goes home.
+- Sonstiges is one of the four home cards. Its first tile is Relais, even when Loxone has no pushbuttons. The card itself shows `Relais · An` or `Relais · Aus`. Relais is not a Loxone control and does not send a Miniserver command. It toggles relay 1 on GPIO40. Boot writes the pin low, which is off, and the pin changes only when that tile is tapped. GPIO1 and GPIO2 are not configured.
 - LoxAPP3.json has no live values. Opening a screen reads each light and shutter on it, first with `GET /jdev/sps/io/<uuidAction>/all` and, if that has no number, with `GET /jdev/sps/io/<state uuid>/state`. Until the read succeeds the tile stays unknown (`...`), not Aus. Coming back to a screen reads it again.
 - A light tap sends `On` or `Off` from the last known value, via `GET /jdev/sps/io/<uuidAction>/<command>`. Storen Auf sends `FullUp` and Ab sends `FullDown`. Position 0 is fully open and 1 is fully closed.
 - Authorization goes through `LoxoneAuthorizer` (`src/loxone_auth.h`). `LoxoneBasicAuthorizer` is what runs. `LoxoneTokenAuthorizer` is the seam for a later `getkey2` / `gettoken` flow. Set `LOXONE_AUTH` to `"token"` and it refuses to connect instead of sending the password. The client does not know which scheme `apply()` implements.
 - Wi-Fi passwords are not written to NVS (`WiFi.persistent(false)`). Serial logs the host and the auth scheme name, not the user or the password.
 
-HTTPS is not implemented. Use the Miniserver's local HTTP port (usually 80).
+The Miniserver client is HTTP only. Use the Miniserver's local HTTP port (usually 80). Weather is the one HTTPS call, to Open-Meteo.
 
 ## Configure
 
