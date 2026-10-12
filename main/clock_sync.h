@@ -12,3 +12,5 @@ bool clock_synced();
 unsigned clock_last_sync_s();
 // setenv("TZ") + tzset(). Call from the UI task.
 void clock_apply_tz(const char* posix_tz);
+
+void clock_sntp_kick();  // after Wi-Fi got an IP: send the first request now

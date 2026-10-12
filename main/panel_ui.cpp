@@ -231,6 +231,8 @@ void rem_tick(bool force);
 bool rem_describe(char* out, size_t n);
 void build_reminders(lv_obj_t* screen);
 bool rem_shown_now();
+bool rem_ok_hit(int x, int y);
+bool rem_ok_pressing();
 void info_hide_all();
 void info_hide_views();
 void home_chips_refresh();
@@ -3351,9 +3353,12 @@ void ui_init() {
   clock_tick(nullptr);
 }
 
-bool ui_power_touch(bool pressed) {
+bool ui_power_touch(bool pressed, int x, int y) {
   if (pressed) last_activity = now_ms();
-  if (scr_off && pressed && rem_shown_now()) return true;  // the card's OK works directly; elsewhere wakes
+  // Screen off: every touch wakes the panel and is swallowed, except a press
+  // on the reminder's OK button, which acknowledges in one tap.
+  if (scr_off && pressed && !wake_swallow && rem_ok_hit(x, y)) return true;
+  if (scr_off && pressed && rem_ok_pressing()) return true;
   if (scr_off && pressed) {
     wake_swallow = true;
     screen_on();

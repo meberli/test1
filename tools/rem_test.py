@@ -119,6 +119,14 @@ def main():
         tapn(p, "rem:ok", 1.0)
         s = state(p)
         check(rem(s) == 0 and "scr=on" in s, f"one tap OK on {names[i]} saver acknowledges and wakes: {s}")
+    # Regression (v0.7.0 bug): a tap on the card body (not OK) while off must wake the panel
+    p.cmd("REMTEST 15 0", expect=("OK",))
+    s = wait(p, lambda s: "scr=off" in s, 20)
+    p.tap(200, 60)
+    time.sleep(1)
+    s = state(p)
+    check("scr=on" in s and rem(s) >= 1, "tap on the card body wakes the panel: " + s)
+    ack_all(p)
     # Tap outside the card while off wakes the panel and keeps the reminder
     p.cmd("REMTEST 14 0", expect=("OK",))
     s = wait(p, lambda s: "scr=off" in s, 20)

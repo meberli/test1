@@ -9,6 +9,7 @@
 #include <atomic>
 
 #include "esp_netif_sntp.h"
+#include "esp_sntp.h"
 #include "esp_timer.h"
 #include "sys.h"
 
@@ -40,6 +41,16 @@ void clock_sntp_start(const char* server) {
 }
 
 bool clock_synced() { return g_synced; }
+
+// Called when the station got its IP: lwIP SNTP sent its first request before
+// the link was up and would wait for its retry timer (~25 s here), which held
+// back everything that needs the time (MeteoSchweiz, calendar).
+void clock_sntp_kick() {
+  if (g_started && !g_synced) {
+    esp_sntp_restart();
+    console_puts("SNTP restarted after Wi-Fi connect");
+  }
+}
 
 unsigned clock_last_sync_s() { return g_last_sync_s; }
 

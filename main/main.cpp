@@ -6,6 +6,7 @@
 #include "lvgl.h"
 #include "net.h"
 #include "settings.h"
+#include "diag.h"
 #include "clock_sync.h"
 #include "sdkconfig.h"
 #include "sys.h"
@@ -680,6 +681,7 @@ void poll() {
         console_printf("Wi-Fi connected, Miniserver %s:%d auth %s\n", settings_loxone().host, settings_loxone().port, auth->name());
         phase = Phase::Loading;
         load_painted = false;
+        clock_sntp_kick();
         maint_mark_valid();  // UI runs and Wi-Fi works: keep this image after an OTA update
         ui_set_wifi_name(wifi_ssid());
         ui_set_status("Wi-Fi connected");
@@ -807,15 +809,23 @@ void ui_task(void*) {
     ui_set_status("Connecting to Wi-Fi");
   }
 
+  diag_start();
   uint32_t last_ms = now_ms();
   for (;;) {
     uint32_t now = now_ms();
     lv_tick_inc(now - last_ms);
     last_ms = now;
+    int64_t t0 = esp_timer_get_time();
     lv_timer_handler();
+    int64_t t1 = esp_timer_get_time();
     harness_poll();
     poll();
+    int64_t t2 = esp_timer_get_time();
     lv_timer_handler();
+    int64_t t3 = esp_timer_get_time();
+    diag_ui_loop(static_cast<uint32_t>((t1 - t0) > (t3 - t2) ? (t1 - t0) : (t3 - t2)), static_cast<uint32_t>(t2 - t1),
+                 static_cast<uint32_t>(t3 - t0));
+    if (phase == Phase::Ready) diag_ui_first_interactive();
     vTaskDelay(pdMS_TO_TICKS(5));
   }
   vTaskDelete(nullptr);  // not reached

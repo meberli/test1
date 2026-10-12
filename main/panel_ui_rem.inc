@@ -23,6 +23,8 @@ lv_obj_t* rem_icon = nullptr;
 lv_obj_t* rem_head = nullptr;
 lv_obj_t* rem_title = nullptr;
 lv_obj_t* rem_when = nullptr;
+lv_obj_t* rem_ok_btn = nullptr;
+bool rem_ok_down = false;  // screen off: a press that started on OK
 bool rem_shown = false;
 
 lv_obj_t* rem_sw[3] = {};
@@ -109,6 +111,12 @@ void rem_restore_backlight() {
 // settings or other views, where it would cover controls).
 bool rem_want() { return rem_n > 0 && (scr_off || nav == Nav::Home); }
 
+// Only touch the label when the text changes: every set invalidates the card
+// (a full redraw costs ~40 ms on this panel).
+void set_text_if(lv_obj_t* l, const char* t) {
+  if (strcmp(lv_label_get_text(l), t) != 0) lv_label_set_text(l, t);
+}
+
 void rem_render() {
   if (rem_card == nullptr) return;
   if (!rem_want()) {
@@ -121,11 +129,14 @@ void rem_render() {
   }
   const CalEvent& e = rem_q[0].ev;
   bool waste = e.kind == 1;
-  lv_label_set_text(rem_icon, waste ? ICON_RECYCLE : ICON_EVENT);
-  lv_obj_set_style_text_color(rem_icon, lv_color_hex(waste ? kGreen : kPurple), 0);
-  if (rem_n > 1) lv_label_set_text_fmt(rem_head, "%s \xC2\xB7 +%d weitere", waste ? "Abfuhr" : "Termin", rem_n - 1);
-  else lv_label_set_text(rem_head, waste ? "Abfuhr" : "Termin");
-  lv_label_set_text(rem_title, e.title);
+  set_text_if(rem_icon, waste ? ICON_RECYCLE : ICON_EVENT);
+  lv_color_t ic = lv_color_hex(waste ? kGreen : kPurple);
+  if (lv_obj_get_style_text_color(rem_icon, 0).full != ic.full) lv_obj_set_style_text_color(rem_icon, ic, 0);
+  char head[48];
+  if (rem_n > 1) snprintf(head, sizeof(head), "%s \xC2\xB7 +%d weitere", waste ? "Abfuhr" : "Termin", rem_n - 1);
+  else snprintf(head, sizeof(head), "%s", waste ? "Abfuhr" : "Termin");
+  set_text_if(rem_head, head);
+  set_text_if(rem_title, e.title);
   char d[24], hm[8], b[64];
   fmt_day(d, sizeof(d), e.start);
   fmt_hm(hm, sizeof(hm), e.start);
@@ -137,12 +148,12 @@ void rem_render() {
   } else {
     snprintf(b, sizeof(b), "%s %s", d, hm);
   }
-  lv_label_set_text(rem_when, b);
+  set_text_if(rem_when, b);
   // Over whatever is shown: the main screen or the screensaver layer.
   lv_obj_t* parent = scr_off ? sleep_layer : main_screen;
   if (lv_obj_get_parent(rem_card) != parent) lv_obj_set_parent(rem_card, parent);
-  lv_obj_move_foreground(rem_card);
-  show(rem_card);
+  if (lv_obj_get_index(rem_card) != static_cast<int32_t>(lv_obj_get_child_cnt(parent)) - 1) lv_obj_move_foreground(rem_card);
+  if (lv_obj_has_flag(rem_card, LV_OBJ_FLAG_HIDDEN)) show(rem_card);
   if (!rem_shown) {
     rem_shown = true;
     last_activity = now_ms();
@@ -189,13 +200,22 @@ void on_rem_ok(lv_event_t*) {
   for (int i = 1; i < rem_n; ++i) rem_q[i - 1] = rem_q[i];
   --rem_n;
   rem_render();
-  if (rem_n == 0 && scr_off) screen_on();
-}
-
-// Tap on the screensaver while a reminder shows (touch is passed through).
-void on_sleep_click(lv_event_t*) {
+  rem_ok_down = false;
   if (scr_off) screen_on();
 }
+
+// Screen off with a reminder: only a press on OK goes to LVGL (one-tap
+// acknowledge); any other touch wakes the panel (ui_power_touch).
+bool rem_ok_hit(int x, int y) {
+  if (!rem_shown || rem_ok_btn == nullptr) return false;
+  lv_area_t a;
+  lv_obj_get_coords(rem_ok_btn, &a);
+  bool hit = x >= a.x1 - 8 && x <= a.x2 + 8 && y >= a.y1 - 8 && y <= a.y2 + 8;
+  rem_ok_down = hit;
+  return hit;
+}
+
+bool rem_ok_pressing() { return rem_ok_down && rem_shown; }
 
 // --- Settings: Termin-Erinnerungen -------------------------------------------------
 
@@ -315,9 +335,9 @@ void build_reminders(lv_obj_t* screen) {
   lv_obj_set_style_bg_opa(rem_card, LV_OPA_COVER, 0);
   lv_obj_set_style_border_color(rem_card, lv_color_hex(kAmber), 0);
   lv_obj_set_style_border_width(rem_card, 2, 0);
-  lv_obj_set_style_shadow_width(rem_card, 30, 0);
-  lv_obj_set_style_shadow_color(rem_card, lv_color_hex(0x000000), 0);
-  lv_obj_set_style_shadow_opa(rem_card, LV_OPA_60, 0);
+  // No shadow: LVGL recomputes it on every redraw of the card (the clock
+  // under it changes every second), ~70 ms per frame on this panel.
+  lv_obj_clear_flag(rem_card, LV_OBJ_FLAG_CLICKABLE);  // only OK reacts
   lv_obj_set_style_pad_all(rem_card, 0, 0);
   lv_obj_clear_flag(rem_card, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_t* bell = make_label(rem_card, &font_icons_24, lv_color_hex(kAmber));
@@ -334,6 +354,7 @@ void build_reminders(lv_obj_t* screen) {
   rem_when = make_label(rem_card, &font_inter_sb16, lv_color_hex(kTextDim));
   lv_obj_set_pos(rem_when, 52, 104);
   lv_obj_t* ok = lv_btn_create(rem_card);
+  rem_ok_btn = ok;
   lv_obj_set_size(ok, 112, 52);
   lv_obj_align(ok, LV_ALIGN_BOTTOM_RIGHT, -14, -14);
   style_glass(ok, 18);
@@ -347,8 +368,6 @@ void build_reminders(lv_obj_t* screen) {
   lv_obj_center(okl);
   hide(rem_card);
 
-  lv_obj_add_flag(sleep_layer, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(sleep_layer, on_sleep_click, LV_EVENT_CLICKED, nullptr);
 }
 
 bool rem_shown_now() { return rem_shown; }

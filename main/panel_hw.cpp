@@ -16,6 +16,7 @@
 #include "panel_ui.h"
 #include "esp_rom_sys.h"
 #include "test_harness.h"
+#include "diag.h"
 
 #define GT911_ADDR1 0x5D
 #define GT911_ADDR2 0x14
@@ -180,7 +181,20 @@ bool gt_write8(uint16_t reg, uint8_t v) {
 
 void gt_poll() {
   uint8_t status = 0;
-  if (!gt_read(0x814E, &status, 1)) return;
+  bool ok = gt_read(0x814E, &status, 1);
+  diag_touch_poll(ok, ok && (status & 0x80) != 0, ok && (status & 0x80) != 0 && (status & 0x0F) != 0);
+  int ix, iy;
+  bool ip;
+  if (diag_touch_inject(&ix, &iy, &ip)) {  // driver-level injection (diag.cpp)
+    if (ip) {
+      last_x = ix;
+      last_y = iy;
+    }
+    last_pressed = ip;
+    if (ok && (status & 0x80) != 0) gt_write8(0x814E, 0);
+    return;
+  }
+  if (!ok) return;
   if ((status & 0x80) == 0) return;  // no new report: keep the last state
   int n = status & 0x0F;
   if (n > 0 && n <= 5) {
@@ -245,7 +259,7 @@ void panel_touch_read_raw(lv_indev_data_t* data) {
 void panel_touch_read(lv_indev_drv_t*, lv_indev_data_t* data) {
   panel_touch_read_raw(data);
   // Screen off: the waking touch is swallowed until release (no tap, no swipe).
-  if (!ui_power_touch(data->state == LV_INDEV_STATE_PRESSED)) {
+  if (!ui_power_touch(data->state == LV_INDEV_STATE_PRESSED, data->point.x, data->point.y)) {
     data->state = LV_INDEV_STATE_RELEASED;
     return;
   }
@@ -330,6 +344,8 @@ void panel_backlight(uint8_t percent, uint32_t fade_ms) {
 uint8_t panel_backlight_level() { return bl_level; }
 
 bool panel_touch_ok() { return touch_ok; }
+
+bool panel_gt911_read(uint16_t reg, uint8_t* out, size_t n) { return touch_ok && gt_read(reg, out, n); }
 
 bool panel_lvgl_start() {
   lv_init();

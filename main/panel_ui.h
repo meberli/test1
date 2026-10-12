@@ -100,7 +100,7 @@ void ui_reset_location();                        // back to Buchs SG (NVS erase)
 
 // Screen timeout. Called for every touch sample before LVGL; false = swallow
 // (the touch that wakes the screen, until its release).
-bool ui_power_touch(bool pressed);
+bool ui_power_touch(bool pressed, int x, int y);
 void ui_power_describe(char* out, size_t n);       // "scr=on|off bl=N to=S saver=K"
 void ui_set_screen_timeout(uint16_t seconds);      // runtime only (harness)
 lv_obj_t* ui_overlay();                            // screensaver screen while off (SHOT)
