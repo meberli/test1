@@ -11,7 +11,7 @@
 #include "esp_heap_caps.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_rgb.h"
-#include "font_dejavu.h"
+#include "fonts.h"
 #include "lvgl.h"
 #include "panel_ui.h"
 #include "esp_rom_sys.h"
@@ -345,10 +345,10 @@ bool panel_lvgl_start() {
   disp_drv.flush_cb = panel_flush;
   disp_drv.draw_buf = &draw_buf;
   lv_disp_t* disp = lv_disp_drv_register(&disp_drv);
-  // lv_conf.h had LV_FONT_DEFAULT &font_dejavu_20; LVGL's Kconfig cannot name
+  // lv_conf.h had LV_FONT_DEFAULT (then DejaVu 20); LVGL's Kconfig cannot name
   // a custom font, so the default theme gets it here instead.
   lv_theme_t* th = lv_theme_default_init(disp, lv_palette_main(LV_PALETTE_BLUE), lv_palette_main(LV_PALETTE_RED),
-                                         true, &font_dejavu_20);
+                                         true, &font_inter_20);
   lv_disp_set_theme(disp, th);
 
   lv_indev_drv_init(&indev_drv);

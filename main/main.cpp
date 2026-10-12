@@ -6,6 +6,7 @@
 #include "lvgl.h"
 #include "net.h"
 #include "settings.h"
+#include "clock_sync.h"
 #include "sdkconfig.h"
 #include "sys.h"
 
@@ -355,6 +356,11 @@ void net_settings(const SettingsRequest& s, NetResult* res) {
       res->location = g_loc;
       console_printf("Location %s %.4f %.4f\n", g_loc.name, g_loc.lat, g_loc.lon);
       break;
+    case SettingsRequest::SetTime:
+      res->ok = settings_save_time(s.time);
+      clock_sntp_start(s.time.server);
+      console_printf("Time server %s, zone %s (%s) saved=%d\n", s.time.server, s.time.tz_name, s.time.tz, res->ok ? 1 : 0);
+      break;
     case SettingsRequest::ResetLocation:
       settings_reset_location();
       g_loc = settings_default_location();
@@ -379,6 +385,7 @@ void net_task(void*) {
         WifiCreds creds;
         settings_load_wifi(&creds);
         wifi_start(creds.ssid, creds.pass, "loxone-panel");
+        clock_sntp_start(settings_load_time().server);  // lwIP retries until the link is up
         res.ok = true;
         break;
       }
@@ -463,6 +470,9 @@ void handle_result(const NetResult& res) {
           break;
         case SettingsRequest::Geocode:
           ui_geocode_done(res.ok, g_places, res.count);
+          break;
+        case SettingsRequest::SetTime:
+          ui_time_done(res.ok);
           break;
         default:
           ui_location_done(res.ok, res.location.name);

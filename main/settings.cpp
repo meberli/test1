@@ -84,13 +84,15 @@ bool settings_reset_location() {
 }
 
 DisplaySettings settings_load_display() {
-  DisplaySettings d = {120, true};
+  DisplaySettings d = {120, true, kSaverBlack};
   nvs_handle_t h;
   if (nvs_open(kNs, NVS_READONLY, &h) != ESP_OK) return d;
   uint16_t t = 0;
   uint8_t hint = 0;
   if (nvs_get_u16(h, "scr_to", &t) == ESP_OK) d.timeout_s = t;
   if (nvs_get_u8(h, "scr_hint", &hint) == ESP_OK) d.hint = hint != 0;
+  uint8_t saver = 0;
+  if (nvs_get_u8(h, "scr_saver", &saver) == ESP_OK && saver <= kSaverAnalog) d.saver = saver;
   nvs_close(h);
   return d;
 }
@@ -99,7 +101,37 @@ bool settings_save_display(const DisplaySettings& d) {
   nvs_handle_t h;
   if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return false;
   bool ok = nvs_set_u16(h, "scr_to", d.timeout_s) == ESP_OK && nvs_set_u8(h, "scr_hint", d.hint ? 1 : 0) == ESP_OK &&
+            nvs_set_u8(h, "scr_saver", d.saver) == ESP_OK &&
             nvs_commit(h) == ESP_OK;
+  nvs_close(h);
+  return ok;
+}
+
+TimeSettings settings_default_time() {
+  TimeSettings t = {};
+  snprintf(t.server, sizeof(t.server), "ch.pool.ntp.org");
+  snprintf(t.tz_name, sizeof(t.tz_name), "Europe/Zurich");
+  snprintf(t.tz, sizeof(t.tz), "CET-1CEST,M3.5.0,M10.5.0/3");
+  return t;
+}
+
+TimeSettings settings_load_time() {
+  TimeSettings t = settings_default_time();
+  nvs_handle_t h;
+  if (nvs_open(kNs, NVS_READONLY, &h) != ESP_OK) return t;
+  TimeSettings n = {};
+  bool ok = get_str(h, "ntp_srv", n.server, sizeof(n.server)) && n.server[0] != '\0' &&
+            get_str(h, "tz_name", n.tz_name, sizeof(n.tz_name)) && get_str(h, "tz_posix", n.tz, sizeof(n.tz)) &&
+            n.tz[0] != '\0';
+  nvs_close(h);
+  return ok ? n : t;
+}
+
+bool settings_save_time(const TimeSettings& t) {
+  nvs_handle_t h;
+  if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return false;
+  bool ok = nvs_set_str(h, "ntp_srv", t.server) == ESP_OK && nvs_set_str(h, "tz_name", t.tz_name) == ESP_OK &&
+            nvs_set_str(h, "tz_posix", t.tz) == ESP_OK && nvs_commit(h) == ESP_OK;
   nvs_close(h);
   return ok;
 }

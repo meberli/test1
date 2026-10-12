@@ -9,7 +9,11 @@
 #include <string.h>
 #include <strings.h>
 
-#include "font_dejavu.h"
+#include "fonts.h"
+#include "clock_sync.h"
+#include <math.h>
+#include <sys/time.h>
+#include <time.h>
 #include "material_icons.h"
 #include "settings.h"
 #include "panel_hw.h"
@@ -35,25 +39,32 @@ constexpr int kMaxPages = 32;
 constexpr uint32_t kShutterRereadMs = 3000;
 constexpr int kLocalRelay = -2;
 
-// Nezz visionOS dark theme: warm black, translucent cards, Apple system colors.
-constexpr uint32_t kBgTop = 0x3A3148;
-constexpr uint32_t kBgBottom = 0x191816;
-constexpr uint32_t kText = 0xFFFFFF;
-constexpr uint32_t kTextDim = 0xD3D3D3;
-constexpr uint32_t kGreen = 0x32D74B;
-constexpr uint32_t kBlue = 0x0A84FF;
-constexpr uint32_t kYellow = 0xFFD60A;
-constexpr uint32_t kOrange = 0xFF9F0A;
-constexpr uint32_t kCyan = 0x5AC8F5;
-constexpr uint32_t kPurple = 0xBF5AF2;
+// Dark Glass (UI proposal 1): deep navy background, glass cards, soft accents.
+constexpr uint32_t kBgTop = 0x1A2438;
+constexpr uint32_t kBgBottom = 0x0B0F1A;
+constexpr uint32_t kText = 0xE8ECF4;
+constexpr uint32_t kTextDim = 0x8A94A8;
+constexpr uint32_t kCardTop = 0x1B2333;
+constexpr uint32_t kCardBottom = 0x131926;
+constexpr uint32_t kBorder = 0x2A3448;
+constexpr uint32_t kOffIcon = 0x5A6478;
+constexpr uint32_t kAccent = 0x7CC4FF;
+constexpr uint32_t kAmber = 0xFFC857;
+constexpr uint32_t kGreen = 0x7EE0A1;
+constexpr uint32_t kBlue = 0x7CC4FF;
+constexpr uint32_t kYellow = 0xFFC857;
+constexpr uint32_t kOrange = 0xFFD27A;
+constexpr uint32_t kCyan = 0x7CC4FF;
+constexpr uint32_t kPurple = 0xB4A8FF;
 
 enum Section : uint8_t { kSecFav = 0, kSecLight = 1, kSecShutter = 2, kSecOther = 3 };
-enum class Nav : uint8_t { Home, Category, Weather, Settings, WifiList, WifiPass, Location, Display };
+enum class Nav : uint8_t { Home, Category, Weather, Settings, WifiList, WifiPass, Location, Display, Time };
 
 const char* kShutterLabel[2] = {"Auf", "Ab"};
 const char* kShutterCommand[2] = {"FullUp", "FullDown"};
-const uint32_t kShutterColor[2] = {kBlue, kGreen};
-const uint32_t kSectionAccent[4] = {kYellow, kOrange, kCyan, kPurple};
+const char* kShutterIcon[2] = {ICON_ARROW_UP, ICON_ARROW_DOWN};
+const char* kSectionIcon[4] = {ICON_STAR, ICON_BULB, ICON_BLINDS, ICON_TOGGLE};
+const uint32_t kSectionAccent[4] = {kAmber, kOrange, kAccent, kGreen};
 
 struct RowPlan {
   bool shutter;
@@ -70,8 +81,10 @@ struct PagePlan {
 lv_obj_t* home_root = nullptr;
 lv_obj_t* cat_root = nullptr;
 lv_obj_t* weather_temp = nullptr;
-lv_obj_t* weather_deg = nullptr;
-lv_obj_t* weather_cond = nullptr;
+lv_obj_t* weather_big = nullptr;  // large icon in the weather card
+lv_obj_t* home_date = nullptr;
+lv_obj_t* home_time = nullptr;
+char cur_cond[48] = "Wetter wird geladen";
 // Forecast panels inside the weather card: [0] Heute, [1] Morgen.
 lv_obj_t* fc_icon[2] = {nullptr, nullptr};
 // Weather day detail screen.
@@ -81,11 +94,11 @@ lv_obj_t* wx_page = nullptr;
 lv_obj_t* wx_icon = nullptr;
 lv_obj_t* wx_temp = nullptr;
 lv_obj_t* wx_cond = nullptr;
-lv_obj_t* wx_info[3] = {nullptr, nullptr, nullptr};
+lv_obj_t* wx_info[4] = {nullptr, nullptr, nullptr, nullptr};
+lv_obj_t* wx_dot[kWxSlots];
 lv_obj_t* wx_hour[kWxSlots];
 lv_obj_t* wx_sicon[kWxSlots];
 lv_obj_t* wx_stemp[kWxSlots];
-lv_obj_t* wx_rainbar[kWxSlots];
 lv_obj_t* wx_smm[kWxSlots];
 lv_obj_t* wx_sprob[kWxSlots];
 lv_obj_t* wx_swind[kWxSlots];
@@ -108,17 +121,52 @@ lv_obj_t* set_root = nullptr;
 lv_obj_t* set_wifi_val = nullptr;
 lv_obj_t* set_loc_val = nullptr;
 lv_obj_t* set_disp_val = nullptr;
+lv_obj_t* set_time_val = nullptr;
+// Uhrzeit (NTP) screen
+lv_obj_t* time_root = nullptr;
+lv_obj_t* time_srv_btn[4] = {};
+lv_obj_t* time_tz_btn[4] = {};
+lv_obj_t* time_ta = nullptr;
+lv_obj_t* time_status = nullptr;
+TimeSettings tset = {};
+bool time_saving = false;
+struct TzChoice {
+  const char* label;
+  const char* name;
+  const char* posix;
+};
+const char* kNtpServers[4] = {"ch.pool.ntp.org", "pool.ntp.org", "ntp.metas.ch", "time.google.com"};
+const TzChoice kTzChoices[4] = {
+    {"Z\xC3\xBCrich", "Europe/Zurich", "CET-1CEST,M3.5.0,M10.5.0/3"},
+    {"London", "Europe/London", "GMT0BST,M3.5.0/1,M10.5.0"},
+    {"UTC", "UTC", "UTC0"},
+    {"New York", "America/New_York", "EST5EDT,M3.2.0,M11.1.0"},
+};
+// Screensaver choices (Bildschirm)
+lv_obj_t* disp_saver_btn[3] = {};
 // Display settings screen and the screen-off layer
 lv_obj_t* disp_root = nullptr;
 lv_obj_t* disp_to_btn[kTimeoutChoiceN] = {};
 lv_obj_t* disp_hint_sw = nullptr;
-DisplaySettings disp = {120, true};
+DisplaySettings disp = {120, true, kSaverBlack};
 uint16_t scr_timeout_s = 120;  // effective timeout (harness SCRTO may override)
 bool scr_off = false;
 bool wake_swallow = false;
 uint32_t last_activity = 0;
 lv_obj_t* sleep_layer = nullptr;
 lv_obj_t* sleep_hint = nullptr;
+lv_obj_t* main_screen = nullptr;
+// Clock screensavers (children of sleep_layer, a screen of its own)
+lv_obj_t* saver_digital = nullptr;
+lv_obj_t* dig_time = nullptr;
+lv_obj_t* dig_date = nullptr;
+lv_obj_t* saver_analog = nullptr;
+lv_timer_t* saver_timer = nullptr;
+int saver_last_min = -1;
+float sec_angle = -1.f;  // second hand angle drawn last (deg)
+lv_area_t sec_area = {};  // its bounding box (absolute coords)
+constexpr uint8_t kClockBacklight = 40;  // percent while a clock saver shows
+constexpr int kClockD = 440;             // analog clock object size
 uint32_t hint_moved_ms = 0;
 constexpr uint32_t kHintMoveMs = 45000;
 constexpr uint8_t kHintBacklight = 4;  // percent
@@ -182,6 +230,8 @@ lv_obj_t* cat_status = nullptr;
 lv_obj_t* msg_status = nullptr;
 lv_obj_t* tiles[kPerPage] = {};
 lv_obj_t* tile_name[kPerPage] = {};
+lv_obj_t* tile_icon[kPerPage] = {};
+lv_obj_t* cat_icon = nullptr;
 lv_obj_t* tile_sub[kPerPage] = {};
 lv_obj_t* shutter_box[kRowsPerPage] = {};
 lv_obj_t* shutter_title[kRowsPerPage] = {};
@@ -240,43 +290,39 @@ void show(lv_obj_t* obj) {
   }
 }
 
+// Glass card: dark navy gradient with a thin light border.
 void style_glass(lv_obj_t* obj, lv_coord_t radius) {
-  lv_obj_set_style_bg_color(obj, lv_color_hex(0x000000), 0);
-  lv_obj_set_style_bg_opa(obj, 170, 0);
-  lv_obj_set_style_bg_color(obj, lv_color_hex(0xFFFFFF), LV_STATE_PRESSED);
-  lv_obj_set_style_bg_opa(obj, LV_OPA_20, LV_STATE_PRESSED);
+  lv_obj_set_style_bg_color(obj, lv_color_hex(kCardTop), 0);
+  lv_obj_set_style_bg_grad_color(obj, lv_color_hex(kCardBottom), 0);
+  lv_obj_set_style_bg_grad_dir(obj, LV_GRAD_DIR_VER, 0);
+  lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(obj, lv_color_hex(0x2C3954), LV_STATE_PRESSED);
+  lv_obj_set_style_bg_grad_color(obj, lv_color_hex(0x1F2940), LV_STATE_PRESSED);
   lv_obj_set_style_radius(obj, radius, 0);
   lv_obj_set_style_border_width(obj, 1, 0);
-  lv_obj_set_style_border_color(obj, lv_color_hex(0xFFFFFF), 0);
-  lv_obj_set_style_border_opa(obj, LV_OPA_40, 0);
+  lv_obj_set_style_border_color(obj, lv_color_hex(kBorder), 0);
+  lv_obj_set_style_border_opa(obj, LV_OPA_COVER, 0);
   lv_obj_set_style_shadow_width(obj, 0, 0);
   lv_obj_set_style_outline_width(obj, 0, 0);
   lv_obj_set_style_pad_all(obj, 0, 0);
   lv_obj_clear_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
 }
 
-// Home tile: squircle glass with a per-category accent gradient and a soft
-// accent glow. The flash on tap (LV_STATE_PRESSED) brightens it.
+// Checked state (selected choice): accent-tinted glass with an accent border.
+void style_checked(lv_obj_t* obj) {
+  lv_obj_set_style_bg_color(obj, lv_color_hex(0x2B4A6B), LV_STATE_CHECKED);
+  lv_obj_set_style_bg_grad_color(obj, lv_color_hex(0x1F3550), LV_STATE_CHECKED);
+  lv_obj_set_style_border_color(obj, lv_color_hex(kAccent), LV_STATE_CHECKED);
+}
+
+// Home button: glass squircle with a coloured icon. The tap flash
+// (LV_STATE_PRESSED) tints it with the accent.
 void style_tile(lv_obj_t* obj, uint32_t accent) {
   lv_color_t a = lv_color_hex(accent);
-  lv_color_t dark = lv_color_hex(0x141416);
-  lv_obj_set_style_radius(obj, 38, 0);
-  lv_obj_set_style_bg_color(obj, lv_color_mix(a, dark, 150), 0);
-  lv_obj_set_style_bg_grad_color(obj, lv_color_mix(a, dark, 45), 0);
-  lv_obj_set_style_bg_grad_dir(obj, LV_GRAD_DIR_VER, 0);
-  lv_obj_set_style_bg_opa(obj, 225, 0);
-  lv_obj_set_style_bg_color(obj, lv_color_mix(a, lv_color_hex(0xFFFFFF), 200), LV_STATE_PRESSED);
-  lv_obj_set_style_bg_grad_color(obj, a, LV_STATE_PRESSED);
-  lv_obj_set_style_border_width(obj, 1, 0);
-  lv_obj_set_style_border_color(obj, lv_color_hex(0xFFFFFF), 0);
-  lv_obj_set_style_border_opa(obj, LV_OPA_30, 0);
-  lv_obj_set_style_shadow_width(obj, 28, 0);
-  lv_obj_set_style_shadow_ofs_y(obj, 8, 0);
-  lv_obj_set_style_shadow_color(obj, a, 0);
-  lv_obj_set_style_shadow_opa(obj, LV_OPA_40, 0);
-  lv_obj_set_style_outline_width(obj, 0, 0);
-  lv_obj_set_style_pad_all(obj, 0, 0);
-  lv_obj_clear_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
+  style_glass(obj, 24);
+  lv_obj_set_style_bg_color(obj, lv_color_mix(a, lv_color_hex(kCardTop), 90), LV_STATE_PRESSED);
+  lv_obj_set_style_bg_grad_color(obj, lv_color_mix(a, lv_color_hex(kCardBottom), 50), LV_STATE_PRESSED);
+  lv_obj_set_style_border_color(obj, a, LV_STATE_PRESSED);
 }
 
 void style_plain(lv_obj_t* obj) {
@@ -316,7 +362,7 @@ const char* empty_text(Section section) {
 
 int round_c(float v) { return static_cast<int>(v >= 0.f ? v + 0.5f : v - 0.5f); }
 
-// --- Drawn weather icons (60x48 container), by WMO weather code ----------
+// --- Weather icons: Material Symbols glyphs, by WMO weather code ----------
 enum class Sky { None, Sun, Partly, Mostly, Cloud, Showers, Rain, Snow, Thunder, Fog };
 
 Sky sky_for(int code) {
@@ -327,38 +373,10 @@ Sky sky_for(int code) {
   if (code == 45 || code == 48) return Sky::Fog;
   if ((code >= 71 && code <= 77) || code == 85 || code == 86) return Sky::Snow;
   if (code >= 95) return Sky::Thunder;
-  if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) return Sky::Rain;
+  if (code >= 80 && code <= 82) return Sky::Showers;
+  if (code >= 51 && code <= 67) return Sky::Rain;
   return Sky::Cloud;
 }
-
-int icon_pct = 100;  // scale for the drawn icons below
-int ic(int v) { return v * icon_pct / 100; }
-
-lv_obj_t* icon_blob(lv_obj_t* parent, int x, int y, int w, int h, uint32_t color, lv_opa_t opa) {
-  lv_obj_t* o = lv_obj_create(parent);
-  lv_obj_set_pos(o, ic(x), ic(y));
-  lv_obj_set_size(o, ic(w) < 2 ? 2 : ic(w), ic(h) < 2 ? 2 : ic(h));
-  lv_obj_set_style_radius(o, LV_RADIUS_CIRCLE, 0);
-  lv_obj_set_style_bg_color(o, lv_color_hex(color), 0);
-  lv_obj_set_style_bg_opa(o, opa, 0);
-  lv_obj_set_style_border_width(o, 0, 0);
-  lv_obj_set_style_shadow_width(o, 0, 0);
-  lv_obj_set_style_pad_all(o, 0, 0);
-  lv_obj_clear_flag(o, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_clear_flag(o, LV_OBJ_FLAG_SCROLLABLE);
-  return o;
-}
-
-void icon_cloud(lv_obj_t* p, int dx, int dy, uint32_t color) {
-  icon_blob(p, dx + 4, dy + 14, 48, 20, color, LV_OPA_COVER);
-  icon_blob(p, dx + 10, dy + 6, 22, 22, color, LV_OPA_COVER);
-  icon_blob(p, dx + 24, dy + 0, 26, 26, color, LV_OPA_COVER);
-}
-
-void draw_sky(lv_obj_t* box, Sky sky, int pct);
-
-// Draws the icon for a WMO code into box (designed for 60x48 at 100 %).
-void weather_icon(lv_obj_t* box, int code, int pct = 100) { draw_sky(box, sky_for(code), pct); }
 
 Sky sky_for_day(int kind) {
   switch (static_cast<DayKind>(kind)) {
@@ -376,63 +394,42 @@ Sky sky_for_day(int kind) {
   return Sky::Cloud;
 }
 
-// Day icon from the derived DayKind (home panels, day view header).
-void day_icon(lv_obj_t* box, int kind, int pct = 100) { draw_sky(box, sky_for_day(kind), pct); }
+struct Glyph {
+  const char* text;
+  uint32_t color;
+};
 
-void draw_sky(lv_obj_t* box, Sky sky, int pct) {
-  icon_pct = pct;
-  lv_obj_clean(box);
+Glyph glyph_for(Sky sky) {
   switch (sky) {
-    case Sky::None:
-      break;
-    case Sky::Sun:
-      icon_blob(box, 12, 6, 36, 36, kYellow, LV_OPA_30);
-      icon_blob(box, 18, 12, 24, 24, kYellow, LV_OPA_COVER);
-      break;
-    case Sky::Partly:
-      icon_blob(box, 26, 0, 30, 30, kYellow, LV_OPA_COVER);
-      icon_cloud(box, 0, 12, 0xE5E5EA);
-      break;
-    case Sky::Mostly:  // small sun behind a big cloud
-      icon_blob(box, 34, 2, 20, 20, kYellow, LV_OPA_COVER);
-      icon_cloud(box, 0, 10, 0xC7C7CC);
-      break;
-    case Sky::Showers:  // sun, cloud and drops
-      icon_blob(box, 30, 0, 24, 24, kYellow, LV_OPA_COVER);
-      icon_cloud(box, 0, 4, 0xC7C7CC);
-      for (int i = 0; i < 2; ++i) {
-        icon_blob(box, 16 + i * 14, 38, 4, 10, kCyan, LV_OPA_COVER);
-      }
-      break;
-    case Sky::Cloud:
-      icon_cloud(box, 4, 6, 0xC7C7CC);
-      break;
-    case Sky::Fog:
-      for (int i = 0; i < 3; ++i) {
-        icon_blob(box, 6 + (i % 2) * 6, 10 + i * 11, 44, 6, 0xC7C7CC, LV_OPA_COVER);
-      }
-      break;
-    case Sky::Rain:
-      icon_cloud(box, 4, 0, 0xAEAEB2);
-      for (int i = 0; i < 3; ++i) {
-        icon_blob(box, 14 + i * 12, 36, 4, 11, kCyan, LV_OPA_COVER);
-      }
-      break;
-    case Sky::Snow:
-      icon_cloud(box, 4, 0, 0xD1D1D6);
-      for (int i = 0; i < 3; ++i) {
-        icon_blob(box, 13 + i * 12, 38 + (i % 2) * 4, 7, 7, 0xFFFFFF, LV_OPA_COVER);
-      }
-      break;
-    case Sky::Thunder: {
-      icon_cloud(box, 4, 0, 0x8E8E93);
-      // Bolt as two thin blobs (lv_line points would need per-icon storage).
-      icon_blob(box, 26, 30, 5, 10, kYellow, LV_OPA_COVER);
-      icon_blob(box, 22, 38, 5, 10, kYellow, LV_OPA_COVER);
-      break;
-    }
+    case Sky::None: return {"", kTextDim};
+    case Sky::Sun: return {ICON_W_SUN, kAmber};
+    case Sky::Partly: return {ICON_W_PARTLY, kAmber};
+    case Sky::Mostly: return {ICON_W_CLOUD, 0xC4CCDC};
+    case Sky::Cloud: return {ICON_W_CLOUD, 0x9AA4B8};
+    case Sky::Showers: return {ICON_W_SHOWERS, kAccent};
+    case Sky::Rain: return {ICON_W_RAIN, kAccent};
+    case Sky::Snow: return {ICON_W_SNOW, kText};
+    case Sky::Thunder: return {ICON_W_THUNDER, kAmber};
+    case Sky::Fog: return {ICON_W_FOG, 0xA8B2C6};
   }
-  icon_pct = 100;
+  return {ICON_W_CLOUD, kTextDim};
+}
+
+void set_glyph(lv_obj_t* label, Glyph g) {
+  lv_label_set_text(label, g.text);
+  lv_obj_set_style_text_color(label, lv_color_hex(g.color), 0);
+}
+
+// label is an lv_label with one of the icon fonts.
+void weather_icon(lv_obj_t* label, int code) { set_glyph(label, glyph_for(sky_for(code))); }
+void day_icon(lv_obj_t* label, int kind) { set_glyph(label, glyph_for(sky_for_day(kind))); }
+
+// "Buchs SG · Teilweise bewölkt" under the temperature.
+void update_weather_line() {
+  if (weather_place == nullptr) return;
+  char buf[100];
+  snprintf(buf, sizeof(buf), "%s \xC2\xB7 %s", cur_place, cur_cond);
+  lv_label_set_text(weather_place, buf);
 }
 
 const char* weather_name(int code) {
@@ -703,20 +700,21 @@ void arm_visible_reads() {
   }
 }
 
-void style_tile(lv_obj_t* btn, LoxoneKind kind, bool is_known, bool on) {
-  style_glass(btn, 24);
-  if (kind == kLoxonePulse) {
-    lv_obj_set_style_border_color(btn, lv_color_hex(kCyan), 0);
-    lv_obj_set_style_border_opa(btn, LV_OPA_70, 0);
-  } else if (is_known && on) {
-    lv_obj_set_style_bg_color(btn, lv_color_hex(kGreen), 0);
-    lv_obj_set_style_bg_opa(btn, LV_OPA_40, 0);
-    lv_obj_set_style_border_color(btn, lv_color_hex(kGreen), 0);
-    lv_obj_set_style_border_opa(btn, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(btn, 2, 0);
-  } else if (!is_known && kind != kLoxonePulse) {
-    lv_obj_set_style_border_opa(btn, LV_OPA_80, 0);
+// Control tile: glass; "on" glows amber (icon, state text, border).
+void style_control(int slot, LoxoneKind kind, bool is_known, bool on, const char* icon) {
+  lv_obj_t* btn = tiles[slot];
+  style_glass(btn, 22);
+  bool lit = is_known && on;
+  if (lit) {
+    lv_obj_set_style_bg_color(btn, lv_color_hex(0x3A3220), 0);
+    lv_obj_set_style_bg_grad_color(btn, lv_color_hex(0x1F1C16), 0);
+    lv_obj_set_style_border_color(btn, lv_color_hex(kAmber), 0);
+    lv_obj_set_style_border_opa(btn, LV_OPA_40, 0);
   }
+  uint32_t ic = lit ? kAmber : kind == kLoxonePulse ? kAccent : kOffIcon;
+  lv_label_set_text(tile_icon[slot], icon);
+  lv_obj_set_style_text_color(tile_icon[slot], lv_color_hex(ic), 0);
+  lv_obj_set_style_text_color(tile_sub[slot], lv_color_hex(lit ? kAmber : kTextDim), 0);
 }
 
 void format_switch_sub(char* out, size_t n, int index) {
@@ -774,7 +772,7 @@ void show_relay_tile(int slot) {
   bool on = panel_relay_is_on();
   lv_label_set_text(tile_name[slot], "Relais");
   lv_label_set_text(tile_sub[slot], on ? "An" : "Aus");
-  style_tile(tiles[slot], kLoxoneSwitch, true, on);
+  style_control(slot, kLoxoneSwitch, true, on, on ? ICON_TOGGLE : ICON_TOGGLE_OFF);
 }
 
 void show_switch_tile(int slot, int index) {
@@ -788,7 +786,11 @@ void show_switch_tile(int slot, int index) {
   char sub[96];
   format_switch_sub(sub, sizeof(sub), index);
   lv_label_set_text(tile_sub[slot], sub);
-  style_tile(tiles[slot], ctrl.kind, known[index], known_on[index]);
+  bool on = known[index] && known_on[index];
+  bool light = current_section == kSecLight || ctrl.state_kind == kLoxoneStatePosition ||
+               ctrl.state_kind == kLoxoneStateScene;
+  const char* icon = light ? ICON_BULB : ctrl.kind == kLoxonePulse ? ICON_TOGGLE : on ? ICON_TOGGLE : ICON_TOGGLE_OFF;
+  style_control(slot, ctrl.kind, known[index], known_on[index], icon);
 }
 
 void show_shutter_row(int row_slot, int index) {
@@ -838,7 +840,8 @@ void refresh_category() {
     hide(shutter_box[row]);
   }
   lv_label_set_text(cat_title, section_name(current_section));
-  lv_obj_set_style_text_color(cat_title, lv_color_hex(kSectionAccent[current_section]), 0);
+  lv_label_set_text(cat_icon, kSectionIcon[current_section]);
+  lv_obj_set_style_text_color(cat_icon, lv_color_hex(kSectionAccent[current_section]), 0);
   if (count > 1) {
     char text[16];
     snprintf(text, sizeof(text), "%d / %d", section_page + 1, count);
@@ -874,6 +877,7 @@ void hide_settings() {
   hide(wp_root);
   hide(loc_root);
   hide(disp_root);
+  hide(time_root);
   if (kb != nullptr) {
     lv_keyboard_set_textarea(kb, nullptr);
     hide(kb);
@@ -928,7 +932,8 @@ void back_level() {
 void refresh_weather_day();
 
 void swipe_page(int dir) {
-  if (nav == Nav::WifiList || nav == Nav::WifiPass || nav == Nav::Location || nav == Nav::Display) {
+  if (nav == Nav::WifiList || nav == Nav::WifiPass || nav == Nav::Location || nav == Nav::Display ||
+      nav == Nav::Time) {
     if (dir < 0) settings_back();
     return;
   }
@@ -1028,7 +1033,8 @@ constexpr uint32_t kFlashMs = 120;
 void clear_flash(lv_timer_t* timer) {
   lv_obj_t* obj = static_cast<lv_obj_t*>(timer->user_data);
   lv_obj_clear_state(obj, LV_STATE_PRESSED);
-  lv_timer_del(timer);
+  // repeat count 1: LVGL deletes the timer itself after this call (an extra
+  // lv_timer_del here freed it twice and could take other timers with it).
 }
 
 void on_press_visual(lv_event_t* event) {
@@ -1166,16 +1172,12 @@ void on_retry(lv_event_t*) {
   retry_pending = true;
 }
 
-void style_shutter_button(lv_obj_t* btn, uint32_t color) {
-  lv_obj_set_style_bg_color(btn, lv_color_hex(color), 0);
-  lv_obj_set_style_bg_opa(btn, 190, 0);
-  lv_obj_set_style_bg_color(btn, lv_color_hex(0xFFFFFF), LV_STATE_PRESSED);
-  lv_obj_set_style_bg_opa(btn, LV_OPA_30, LV_STATE_PRESSED);
-  lv_obj_set_style_border_width(btn, 0, 0);
-  lv_obj_set_style_radius(btn, 20, 0);
-  lv_obj_set_style_shadow_width(btn, 0, 0);
-  lv_obj_set_style_outline_width(btn, 0, 0);
-  lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+void style_shutter_button(lv_obj_t* btn) {
+  style_glass(btn, 18);
+  lv_obj_set_style_bg_color(btn, lv_color_hex(0x232D42), 0);
+  lv_obj_set_style_bg_grad_color(btn, lv_color_hex(0x1A2234), 0);
+  lv_obj_set_style_bg_color(btn, lv_color_hex(0x2B4A6B), LV_STATE_PRESSED);
+  lv_obj_set_style_border_color(btn, lv_color_hex(kAccent), LV_STATE_PRESSED);
 }
 
 bool apply_state_value(int index, const char* value) {
@@ -1226,19 +1228,6 @@ int pick_state(bool preferred_only, uint32_t now) {
   return -1;
 }
 
-void make_orb(lv_obj_t* parent, int x, int y, int d, uint32_t color, lv_opa_t opa) {
-  lv_obj_t* orb = lv_obj_create(parent);
-  lv_obj_set_pos(orb, x, y);
-  lv_obj_set_size(orb, d, d);
-  lv_obj_set_style_radius(orb, LV_RADIUS_CIRCLE, 0);
-  lv_obj_set_style_bg_color(orb, lv_color_hex(color), 0);
-  lv_obj_set_style_bg_opa(orb, opa, 0);
-  lv_obj_set_style_border_width(orb, 0, 0);
-  lv_obj_set_style_shadow_width(orb, 0, 0);
-  lv_obj_clear_flag(orb, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_clear_flag(orb, LV_OBJ_FLAG_SCROLLABLE);
-}
-
 void refresh_visible() {
   if (message_open) {
     return;
@@ -1252,6 +1241,10 @@ void refresh_visible() {
 
 // ---- Weather day detail ---------------------------------------------------
 const char* kWeekday[7] = {"Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"};
+const char* kWeekdayShort[7] = {"So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"};
+const char* kMonth[12] = {"Januar", "Februar", "M\xC3\xA4rz", "April", "Mai", "Juni",
+                          "Juli", "August", "September", "Oktober", "November", "Dezember"};
+const char* kMonthShort[12] = {"Jan", "Feb", "M\xC3\xA4r", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"};
 
 int weekday_of(int y, int m, int d) {  // 0 = Sunday (Sakamoto)
   static const int t[] = {0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4};
@@ -1265,119 +1258,119 @@ lv_obj_t* wx_label(lv_obj_t* parent, const lv_font_t* font, uint32_t color, int 
   return l;
 }
 
-lv_obj_t* wx_handle(lv_obj_t* parent, int x) {
-  lv_obj_t* h = lv_obj_create(parent);
-  lv_obj_set_pos(h, x, 190);
-  lv_obj_set_size(h, 5, 80);
-  lv_obj_set_style_radius(h, LV_RADIUS_CIRCLE, 0);
-  lv_obj_set_style_bg_color(h, lv_color_hex(kText), 0);
-  lv_obj_set_style_bg_opa(h, LV_OPA_30, 0);
-  lv_obj_set_style_border_width(h, 0, 0);
-  lv_obj_clear_flag(h, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_clear_flag(h, LV_OBJ_FLAG_SCROLLABLE);
-  return h;
+lv_obj_t* make_bar(lv_obj_t* parent, int x, int y, int w, int h, uint32_t color, lv_opa_t opa) {
+  lv_obj_t* b = lv_obj_create(parent);
+  lv_obj_set_pos(b, x, y);
+  lv_obj_set_size(b, w, h);
+  lv_obj_set_style_radius(b, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(b, lv_color_hex(color), 0);
+  lv_obj_set_style_bg_opa(b, opa, 0);
+  lv_obj_set_style_border_width(b, 0, 0);
+  lv_obj_set_style_pad_all(b, 0, 0);
+  lv_obj_clear_flag(b, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_clear_flag(b, LV_OBJ_FLAG_SCROLLABLE);
+  return b;
+}
+
+// Edge handle: a next/previous page exists.
+lv_obj_t* wx_handle(lv_obj_t* parent, int x) { return make_bar(parent, x, 190, 5, 80, kAccent, LV_OPA_50); }
+
+// Home bar at the bottom: swipe up from the bottom edge goes home.
+void make_home_bar(lv_obj_t* parent) { make_bar(parent, 200, 468, 80, 4, 0xFFFFFF, LV_OPA_30); }
+
+lv_obj_t* make_divider(lv_obj_t* parent, int x, int y, int w, int h) {
+  lv_obj_t* d = make_bar(parent, x, y, w, h, kBorder, LV_OPA_COVER);
+  lv_obj_set_style_radius(d, 0, 0);
+  return d;
 }
 
 constexpr int kColW = 55;
-constexpr int kCurveTop = 90;
-constexpr int kCurveH = 36;
-constexpr int kRainBase = 178;
-constexpr int kRainH = 36;
+constexpr int kCurveTop = 66;
+constexpr int kCurveH = 40;
 
 void build_weather_screen(lv_obj_t* screen) {
   wx_root = lv_obj_create(screen);
   lv_obj_set_pos(wx_root, 0, 0);
   lv_obj_set_size(wx_root, kScreen, kScreen);
   style_plain(wx_root);
-  lv_obj_clear_flag(wx_root, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_clear_flag(wx_root, LV_OBJ_FLAG_CLICKABLE);
 
-  wx_title = wx_label(wx_root, &font_dejavu_20, kCyan, 24, 16);
-  wx_page = make_label(wx_root, &font_dejavu_14, lv_color_hex(kTextDim));
-  lv_obj_align(wx_page, LV_ALIGN_TOP_RIGHT, -24, 22);
+  wx_title = wx_label(wx_root, &font_inter_14, kTextDim, 22, 20);
+  lv_obj_set_width(wx_title, 380);
+  lv_label_set_long_mode(wx_title, LV_LABEL_LONG_DOT);
+  wx_page = make_label(wx_root, &font_inter_14, lv_color_hex(kTextDim));
+  lv_obj_align(wx_page, LV_ALIGN_TOP_RIGHT, -22, 20);
 
-  lv_obj_t* head = lv_obj_create(wx_root);
-  lv_obj_set_pos(head, kMargin, 50);
-  lv_obj_set_size(head, kScreen - 2 * kMargin, 124);
-  style_glass(head, 24);
-  lv_obj_clear_flag(head, LV_OBJ_FLAG_CLICKABLE);
-  wx_icon = lv_obj_create(head);
-  style_plain(wx_icon);
-  lv_obj_set_pos(wx_icon, 14, 14);
-  lv_obj_set_size(wx_icon, 72, 58);
-  lv_obj_clear_flag(wx_icon, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_clear_flag(wx_icon, LV_OBJ_FLAG_SCROLLABLE);
-  wx_temp = wx_label(head, &lv_font_montserrat_28, kText, 100, 12);
-  wx_cond = wx_label(head, &font_dejavu_14, kTextDim, 100, 50);
-  wx_empty = wx_label(head, &font_dejavu_20, kTextDim, 100, 40);
-  wx_info[0] = wx_label(head, &font_dejavu_14, kCyan, 16, 80);
-  wx_info[1] = wx_label(head, &font_dejavu_14, kText, 16, 100);
-  wx_info[2] = wx_label(head, &font_dejavu_14, kText, 236, 80);
+  wx_icon = wx_label(wx_root, &font_icons_80, kAmber, 16, 40);
+  wx_temp = wx_label(wx_root, &font_inter_light_40, kText, 112, 50);
+  lv_label_set_recolor(wx_temp, true);
+  wx_cond = wx_label(wx_root, &font_inter_16, kTextDim, 114, 100);
+  lv_obj_set_width(wx_cond, 344);
+  lv_label_set_long_mode(wx_cond, LV_LABEL_LONG_DOT);
+  wx_empty = wx_label(wx_root, &font_inter_20, kTextDim, 114, 64);
+
+  // Info chips: rain, wind, sunrise, sunset.
+  static const char* kChipIcon[4] = {ICON_DROP, ICON_AIR, ICON_SUNRISE, ICON_SUNSET};
+  for (int i = 0; i < 4; ++i) {
+    lv_obj_t* chip = lv_obj_create(wx_root);
+    lv_obj_set_pos(chip, 20 + i * 112, 136);
+    lv_obj_set_size(chip, 104, 52);
+    style_glass(chip, 14);
+    lv_obj_clear_flag(chip, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_t* ic = wx_label(chip, &font_icons_16, kAccent, 10, 6);
+    lv_label_set_text(ic, kChipIcon[i]);
+    wx_info[i] = wx_label(chip, &font_inter_sb16, kText, 10, 25);
+  }
 
   lv_obj_t* tl = lv_obj_create(wx_root);
-  lv_obj_set_pos(tl, kMargin, 184);
-  lv_obj_set_size(tl, kScreen - 2 * kMargin, 270);
-  style_glass(tl, 24);
+  lv_obj_set_pos(tl, 20, 200);
+  lv_obj_set_size(tl, kScreen - 40, 232);
+  style_glass(tl, 22);
   lv_obj_clear_flag(tl, LV_OBJ_FLAG_CLICKABLE);
 
   wx_curve = lv_line_create(tl);
   lv_obj_set_pos(wx_curve, 0, 0);
   lv_obj_set_style_line_width(wx_curve, 3, 0);
-  lv_obj_set_style_line_color(wx_curve, lv_color_hex(kOrange), 0);
+  lv_obj_set_style_line_color(wx_curve, lv_color_hex(kAccent), 0);
   lv_obj_set_style_line_rounded(wx_curve, true, 0);
 
   for (int i = 0; i < kWxSlots; ++i) {
     int cx = i * kColW;
-    wx_hour[i] = wx_label(tl, &font_dejavu_14, kTextDim, cx, 8);
+    wx_hour[i] = wx_label(tl, &font_inter_14, kTextDim, cx, 8);
     lv_obj_set_width(wx_hour[i], kColW);
     lv_obj_set_style_text_align(wx_hour[i], LV_TEXT_ALIGN_CENTER, 0);
     char h[4];
     snprintf(h, sizeof(h), "%02d", i * 3);
     lv_label_set_text(wx_hour[i], h);
-    wx_sicon[i] = lv_obj_create(tl);
-    style_plain(wx_sicon[i]);
-    lv_obj_set_pos(wx_sicon[i], cx + 9, 30);
-    lv_obj_set_size(wx_sicon[i], 38, 30);
-    lv_obj_clear_flag(wx_sicon[i], LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_clear_flag(wx_sicon[i], LV_OBJ_FLAG_SCROLLABLE);
-    wx_stemp[i] = wx_label(tl, &font_dejavu_14, kText, cx, 66);
+    wx_sicon[i] = wx_label(tl, &font_icons_24, kAmber, cx, 30);
+    lv_obj_set_width(wx_sicon[i], kColW);
+    lv_obj_set_style_text_align(wx_sicon[i], LV_TEXT_ALIGN_CENTER, 0);
+    wx_dot[i] = make_bar(tl, cx + kColW / 2 - 4, kCurveTop, 8, 8, kAccent, LV_OPA_COVER);
+    wx_stemp[i] = wx_label(tl, &font_inter_sb16, kText, cx, 120);
     lv_obj_set_width(wx_stemp[i], kColW);
     lv_obj_set_style_text_align(wx_stemp[i], LV_TEXT_ALIGN_CENTER, 0);
-    wx_rainbar[i] = lv_obj_create(tl);
-    lv_obj_set_style_bg_color(wx_rainbar[i], lv_color_hex(kBlue), 0);
-    lv_obj_set_style_bg_opa(wx_rainbar[i], LV_OPA_80, 0);
-    lv_obj_set_style_radius(wx_rainbar[i], 4, 0);
-    lv_obj_set_style_border_width(wx_rainbar[i], 0, 0);
-    lv_obj_clear_flag(wx_rainbar[i], LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_clear_flag(wx_rainbar[i], LV_OBJ_FLAG_SCROLLABLE);
-    wx_smm[i] = wx_label(tl, &font_dejavu_14, kCyan, cx, 182);
+    wx_smm[i] = wx_label(tl, &font_inter_14, kAccent, cx, 148);
     lv_obj_set_width(wx_smm[i], kColW);
     lv_obj_set_style_text_align(wx_smm[i], LV_TEXT_ALIGN_CENTER, 0);
-    wx_sprob[i] = wx_label(tl, &font_dejavu_14, kTextDim, cx, 200);
+    wx_sprob[i] = wx_label(tl, &font_inter_14, kTextDim, cx, 166);
     lv_obj_set_width(wx_sprob[i], kColW);
     lv_obj_set_style_text_align(wx_sprob[i], LV_TEXT_ALIGN_CENTER, 0);
-    wx_swind[i] = wx_label(tl, &font_dejavu_14, kTextDim, cx, 218);
+    wx_swind[i] = wx_label(tl, &font_inter_14, kTextDim, cx, 184);
     lv_obj_set_width(wx_swind[i], kColW);
     lv_obj_set_style_text_align(wx_swind[i], LV_TEXT_ALIGN_CENTER, 0);
   }
 
   // Row units for the three bottom rows.
-  lv_obj_t* legend = make_label(tl, &font_dejavu_14, lv_color_hex(kTextDim));
+  lv_obj_t* legend = make_label(tl, &font_inter_14, lv_color_hex(kTextDim));
   lv_label_set_text(legend, "Regen mm  \xC2\xB7  Wahrscheinlichkeit %  \xC2\xB7  Wind km/h");
   lv_obj_align(legend, LV_ALIGN_BOTTOM_MID, 0, -8);
   lv_obj_set_style_text_opa(legend, LV_OPA_70, 0);
 
   wx_prev_hint = wx_handle(wx_root, 5);
   wx_next_hint = wx_handle(wx_root, 470);
-  lv_obj_t* home_hint = lv_obj_create(wx_root);
-  lv_obj_set_pos(home_hint, 200, 468);
-  lv_obj_set_size(home_hint, 80, 5);
-  lv_obj_set_style_radius(home_hint, LV_RADIUS_CIRCLE, 0);
-  lv_obj_set_style_bg_color(home_hint, lv_color_hex(kText), 0);
-  lv_obj_set_style_bg_opa(home_hint, LV_OPA_30, 0);
-  lv_obj_set_style_border_width(home_hint, 0, 0);
-  lv_obj_clear_flag(home_hint, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_clear_flag(home_hint, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_t* up = make_label(wx_root, &font_icons_24, lv_color_hex(kTextDim));
+  lv_label_set_text(up, ICON_UP);
+  lv_obj_align(up, LV_ALIGN_BOTTOM_MID, 0, -14);
+  make_home_bar(wx_root);
   hide(wx_root);
 }
 
@@ -1398,58 +1391,46 @@ void refresh_weather_day() {
   if (wx_day >= wx_count) wx_day = wx_count - 1;
   const WeatherDetailDay& d = wx_week[wx_day];
   int y = atoi(d.date), m = atoi(d.date + 5), dd = atoi(d.date + 8);
-  char buf[96];
-  const char* rel = wx_day == 0 ? "Heute" : wx_day == 1 ? "Morgen" : nullptr;
-  const char* wd = (m >= 1 && m <= 12) ? kWeekday[weekday_of(y, m, dd)] : "";
-  if (rel != nullptr) {
-    snprintf(buf, sizeof(buf), "%s \xC2\xB7 %s %d.%d.", rel, wd, dd, m);
-  } else {
-    snprintf(buf, sizeof(buf), "%s %d.%d.", wd, dd, m);
-  }
+  char buf[128];
+  const char* rel = wx_day == 0 ? "Heute \xC2\xB7 " : wx_day == 1 ? "Morgen \xC2\xB7 " : "";
+  bool date_ok = m >= 1 && m <= 12;
+  snprintf(buf, sizeof(buf), "%s%s, %d. %s \xC2\xB7 %s", rel, date_ok ? kWeekday[weekday_of(y, m, dd)] : "", dd,
+           date_ok ? kMonth[m - 1] : "", cur_place);
   lv_label_set_text(wx_title, buf);
   snprintf(buf, sizeof(buf), "%d / %d", wx_day + 1, wx_count);
   lv_label_set_text(wx_page, buf);
-  lv_obj_align(wx_page, LV_ALIGN_TOP_RIGHT, -24, 22);
-  day_icon(wx_icon, d.kind, 115);
-  snprintf(buf, sizeof(buf), "%d\xC2\xB0 / %d\xC2\xB0", round_c(d.t_max), round_c(d.t_min));
+  lv_obj_align(wx_page, LV_ALIGN_TOP_RIGHT, -22, 20);
+  day_icon(wx_icon, d.kind);
+  snprintf(buf, sizeof(buf), "%d\xC2\xB0 #8A94A8 / %d\xC2\xB0#", round_c(d.t_max), round_c(d.t_min));
   lv_label_set_text(wx_temp, buf);
-  lv_label_set_text(wx_cond, day_kind_name(static_cast<DayKind>(d.kind)));
-  snprintf(buf, sizeof(buf), "Niederschlag %.1f mm \xC2\xB7 %d %%", static_cast<double>(d.precip), d.prob_max);
+  snprintf(buf, sizeof(buf), "%s \xC2\xB7 Regen %d %%", day_kind_name(static_cast<DayKind>(d.kind)), d.prob_max);
+  lv_label_set_text(wx_cond, buf);
+  snprintf(buf, sizeof(buf), "%.1f mm", static_cast<double>(d.precip));
   lv_label_set_text(wx_info[0], buf);
-  snprintf(buf, sizeof(buf), "Wind max %d km/h", round_c(d.wind_max));
+  snprintf(buf, sizeof(buf), "%d km/h", round_c(d.wind_max));
   lv_label_set_text(wx_info[1], buf);
-  // Plain hyphen: the en dash is outside the font range.
-  snprintf(buf, sizeof(buf), "Sonne %s - %s", d.sunrise, d.sunset);
-  lv_label_set_text(wx_info[2], buf);
+  lv_label_set_text(wx_info[2], d.sunrise);
+  lv_label_set_text(wx_info[3], d.sunset);
 
-  float lo = d.slot[0].temp, hi = d.slot[0].temp, rmax = 2.0f;
+  float lo = d.slot[0].temp, hi = d.slot[0].temp;
   for (int i = 0; i < kWxSlots; ++i) {
     if (d.slot[i].temp < lo) lo = d.slot[i].temp;
     if (d.slot[i].temp > hi) hi = d.slot[i].temp;
-    if (d.slot[i].precip > rmax) rmax = d.slot[i].precip;
   }
   float span = hi - lo < 1.f ? 1.f : hi - lo;
   for (int i = 0; i < kWxSlots; ++i) {
-    const WeatherSlot& s = d.slot[i];
-    weather_icon(wx_sicon[i], s.code, 62);
-    snprintf(buf, sizeof(buf), "%d\xC2\xB0", round_c(s.temp));
+    const WeatherSlot& sl = d.slot[i];
+    weather_icon(wx_sicon[i], sl.code);
+    snprintf(buf, sizeof(buf), "%d\xC2\xB0", round_c(sl.temp));
     lv_label_set_text(wx_stemp[i], buf);
     wx_curve_pts[i].x = i * kColW + kColW / 2;
-    wx_curve_pts[i].y = kCurveTop + kCurveH - static_cast<int>((s.temp - lo) / span * kCurveH);
-    int h = static_cast<int>(s.precip / rmax * kRainH + 0.5f);
-    if (s.precip > 0.f && h < 2) h = 2;
-    if (h <= 0) {
-      hide(wx_rainbar[i]);
-    } else {
-      show(wx_rainbar[i]);
-      lv_obj_set_pos(wx_rainbar[i], i * kColW + 17, kRainBase - h);
-      lv_obj_set_size(wx_rainbar[i], 20, h);
-    }
-    snprintf(buf, sizeof(buf), "%.1f", static_cast<double>(s.precip));
+    wx_curve_pts[i].y = kCurveTop + kCurveH - static_cast<int>((sl.temp - lo) / span * kCurveH);
+    lv_obj_set_pos(wx_dot[i], wx_curve_pts[i].x - 4, wx_curve_pts[i].y - 4);
+    snprintf(buf, sizeof(buf), "%.1f", static_cast<double>(sl.precip));
     lv_label_set_text(wx_smm[i], buf);
-    snprintf(buf, sizeof(buf), "%d%%", s.prob);
+    snprintf(buf, sizeof(buf), "%d%%", sl.prob);
     lv_label_set_text(wx_sprob[i], buf);
-    snprintf(buf, sizeof(buf), "%d", round_c(s.wind));
+    snprintf(buf, sizeof(buf), "%d", round_c(sl.wind));
     lv_label_set_text(wx_swind[i], buf);
   }
   lv_line_set_points(wx_curve, wx_curve_pts, kWxSlots);
@@ -1467,17 +1448,10 @@ lv_obj_t* make_screen_root(lv_obj_t* screen, const char* title) {
   lv_obj_set_pos(root, 0, 0);
   lv_obj_set_size(root, kScreen, kScreen);
   style_plain(root);
-  lv_obj_t* t = make_label(root, &font_dejavu_20, lv_color_hex(kText));
-  lv_obj_set_pos(t, 24, 16);
+  lv_obj_t* t = make_label(root, &font_inter_20, lv_color_hex(kText));
+  lv_obj_set_pos(t, 24, 20);
   lv_label_set_text(t, title);
-  lv_obj_t* home_hint = lv_obj_create(root);
-  lv_obj_set_pos(home_hint, 200, 468);
-  lv_obj_set_size(home_hint, 80, 5);
-  lv_obj_set_style_radius(home_hint, LV_RADIUS_CIRCLE, 0);
-  lv_obj_set_style_bg_color(home_hint, lv_color_hex(kText), 0);
-  lv_obj_set_style_bg_opa(home_hint, LV_OPA_30, 0);
-  lv_obj_set_style_border_width(home_hint, 0, 0);
-  lv_obj_clear_flag(home_hint, LV_OBJ_FLAG_CLICKABLE);
+  make_home_bar(root);
   hide(root);
   return root;
 }
@@ -1504,7 +1478,7 @@ lv_obj_t* make_row(lv_obj_t* parent, int h, const char* icon, uint32_t icon_colo
   if (icon != nullptr) {
     lv_obj_t* ic = make_label(row, &font_icons_24, lv_color_hex(icon_color));
     lv_label_set_text(ic, icon);
-    lv_obj_align(ic, LV_ALIGN_LEFT_MID, 4, 0);
+    lv_obj_align(ic, LV_ALIGN_LEFT_MID, 16, 0);
   }
   return row;
 }
@@ -1535,10 +1509,21 @@ const char* timeout_text(uint16_t s) {
 
 void refresh_display_settings() {
   char buf[64];
+  static const char* kSaverName[3] = {"Schwarz", "Digitaluhr", "Analoguhr"};
   if (disp.timeout_s == 0) {
     snprintf(buf, sizeof(buf), "Bleibt an");
+  } else if (disp.saver == kSaverBlack) {
+    snprintf(buf, sizeof(buf), "Nach %s: Schwarz, Hinweis %s", timeout_text(disp.timeout_s), disp.hint ? "an" : "aus");
   } else {
-    snprintf(buf, sizeof(buf), "Aus nach %s, Hinweis %s", timeout_text(disp.timeout_s), disp.hint ? "an" : "aus");
+    snprintf(buf, sizeof(buf), "Nach %s: %s", timeout_text(disp.timeout_s), kSaverName[disp.saver]);
+  }
+  for (int i = 0; i < 3; ++i) {
+    if (disp_saver_btn[i] == nullptr) continue;
+    if (i == disp.saver) {
+      lv_obj_add_state(disp_saver_btn[i], LV_STATE_CHECKED);
+    } else {
+      lv_obj_clear_state(disp_saver_btn[i], LV_STATE_CHECKED);
+    }
   }
   if (set_disp_val != nullptr) lv_label_set_text(set_disp_val, buf);
   for (int i = 0; i < kTimeoutChoiceN; ++i) {
@@ -1576,6 +1561,15 @@ void on_timeout_btn(lv_event_t* e) {
   refresh_display_settings();
 }
 
+void on_saver_btn(lv_event_t* e) {
+  if (gesture_consumed) return;
+  int i = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
+  disp.saver = static_cast<uint8_t>(i);
+  bool ok = settings_save_display(disp);
+  console_printf("Screen saver %d saved=%d\n", i, ok ? 1 : 0);
+  refresh_display_settings();
+}
+
 void on_hint_row(lv_event_t*) {
   if (gesture_consumed) return;
   disp.hint = !disp.hint;
@@ -1584,7 +1578,9 @@ void on_hint_row(lv_event_t*) {
   refresh_display_settings();
 }
 
-// --- Screen timeout ---
+// --- Screen timeout and screensavers ---
+// While off, sleep_layer (a screen of its own) is the active screen, so LVGL
+// only renders it: black, the dim "wake me up", or one of the clocks.
 void move_hint() {
   int x = 16 + static_cast<int>(esp_random() % (kScreen - 140));
   int y = 16 + static_cast<int>(esp_random() % (kScreen - 50));
@@ -1592,25 +1588,194 @@ void move_hint() {
   hint_moved_ms = now_ms();
 }
 
+bool local_now(struct tm* out, int* ms) {
+  struct timeval tv;
+  gettimeofday(&tv, nullptr);
+  time_t t = tv.tv_sec;
+  localtime_r(&t, out);
+  if (ms != nullptr) *ms = static_cast<int>(tv.tv_usec / 1000);
+  return out->tm_year + 1900 >= 2024;  // false until SNTP has set the clock
+}
+
+// Swiss railway clock geometry (fractions of the dial radius R).
+constexpr float kDialR = 200.f;
+lv_point_t polar(float cx, float cy, float deg, float r) {
+  float a = deg * static_cast<float>(M_PI) / 180.f;
+  lv_point_t p;
+  p.x = static_cast<lv_coord_t>(lroundf(cx + r * sinf(a)));
+  p.y = static_cast<lv_coord_t>(lroundf(cy - r * cosf(a)));
+  return p;
+}
+
+// Tapered bar from -back to +len along deg (a hand), drawn as a polygon.
+void draw_hand(lv_draw_ctx_t* ctx, float cx, float cy, float deg, float back, float len, float w_back, float w_tip,
+               lv_color_t color) {
+  float a = deg * static_cast<float>(M_PI) / 180.f;
+  float dx = sinf(a), dy = -cosf(a);  // along the hand
+  float nx = -dy, ny = dx;            // across
+  float bx = cx - dx * back, by = cy - dy * back;
+  float tx = cx + dx * len, ty = cy + dy * len;
+  lv_point_t pts[4] = {
+      {static_cast<lv_coord_t>(lroundf(bx + nx * w_back / 2)), static_cast<lv_coord_t>(lroundf(by + ny * w_back / 2))},
+      {static_cast<lv_coord_t>(lroundf(tx + nx * w_tip / 2)), static_cast<lv_coord_t>(lroundf(ty + ny * w_tip / 2))},
+      {static_cast<lv_coord_t>(lroundf(tx - nx * w_tip / 2)), static_cast<lv_coord_t>(lroundf(ty - ny * w_tip / 2))},
+      {static_cast<lv_coord_t>(lroundf(bx - nx * w_back / 2)), static_cast<lv_coord_t>(lroundf(by - ny * w_back / 2))},
+  };
+  lv_draw_rect_dsc_t dsc;
+  lv_draw_rect_dsc_init(&dsc);
+  dsc.bg_color = color;
+  dsc.bg_opa = LV_OPA_COVER;
+  lv_draw_polygon(ctx, &dsc, pts, 4);
+}
+
+void draw_disc(lv_draw_ctx_t* ctx, float x, float y, float r, lv_color_t color) {
+  lv_draw_rect_dsc_t dsc;
+  lv_draw_rect_dsc_init(&dsc);
+  dsc.radius = LV_RADIUS_CIRCLE;
+  dsc.bg_color = color;
+  dsc.bg_opa = LV_OPA_COVER;
+  lv_area_t a = {static_cast<lv_coord_t>(lroundf(x - r)), static_cast<lv_coord_t>(lroundf(y - r)),
+                 static_cast<lv_coord_t>(lroundf(x + r)), static_cast<lv_coord_t>(lroundf(y + r))};
+  lv_draw_rect(ctx, &dsc, &a);
+}
+
+// SBB clock second hand: sweeps the dial in 58.5 s, rests at 12 until the
+// minute hand jumps on the full minute.
+float second_angle(const struct tm& t, int ms) {
+  float s = static_cast<float>(t.tm_sec) + static_cast<float>(ms) / 1000.f;
+  return s >= 58.5f ? 0.f : s * (360.f / 58.5f);
+}
+
+// Bounding box of the second hand (red bar plus the disc at its tip).
+lv_area_t second_area(lv_obj_t* obj, float deg) {
+  lv_area_t c;
+  lv_obj_get_coords(obj, &c);
+  float cx = (c.x1 + c.x2) / 2.f, cy = (c.y1 + c.y2) / 2.f;
+  lv_point_t p1 = polar(cx, cy, deg + 180.f, kDialR * 0.31f);
+  lv_point_t p2 = polar(cx, cy, deg, kDialR * 0.645f);
+  int m = static_cast<int>(kDialR * 0.105f) + 4;
+  lv_area_t a;
+  a.x1 = LV_MIN(p1.x, p2.x) - m;
+  a.y1 = LV_MIN(p1.y, p2.y) - m;
+  a.x2 = LV_MAX(p1.x, p2.x) + m;
+  a.y2 = LV_MAX(p1.y, p2.y) + m;
+  return a;
+}
+
+void analog_draw(lv_event_t* e) {
+  lv_obj_t* obj = lv_event_get_target(e);
+  lv_draw_ctx_t* ctx = lv_event_get_draw_ctx(e);
+  lv_area_t c;
+  lv_obj_get_coords(obj, &c);
+  float cx = (c.x1 + c.x2) / 2.f, cy = (c.y1 + c.y2) / 2.f;
+  const float R = kDialR;
+  lv_color_t black = lv_color_hex(0x111111);
+  lv_color_t red = lv_color_hex(0xEB0000);
+  draw_disc(ctx, cx, cy, R + 12.f, lv_color_hex(0x3A3F48));  // case
+  draw_disc(ctx, cx, cy, R, lv_color_hex(0xF4F4F2));         // white face
+  lv_draw_line_dsc_t ld;
+  lv_draw_line_dsc_init(&ld);
+  ld.color = black;
+  ld.opa = LV_OPA_COVER;
+  for (int i = 0; i < 60; ++i) {
+    bool hour = i % 5 == 0;
+    ld.width = static_cast<lv_coord_t>(hour ? R * 0.075f : R * 0.028f);
+    lv_point_t p1 = polar(cx, cy, i * 6.f, hour ? R * 0.70f : R * 0.86f);
+    lv_point_t p2 = polar(cx, cy, i * 6.f, R * 0.95f);
+    lv_draw_line(ctx, &ld, &p1, &p2);
+  }
+  struct tm t;
+  int ms = 0;
+  local_now(&t, &ms);
+  float hour_deg = static_cast<float>(t.tm_hour % 12) * 30.f + static_cast<float>(t.tm_min) * 0.5f;
+  float min_deg = static_cast<float>(t.tm_min) * 6.f;  // jumps on the full minute
+  draw_hand(ctx, cx, cy, hour_deg, R * 0.24f, R * 0.64f, R * 0.105f, R * 0.085f, black);
+  draw_hand(ctx, cx, cy, min_deg, R * 0.24f, R * 0.93f, R * 0.085f, R * 0.06f, black);
+  float sd = sec_angle < 0.f ? second_angle(t, ms) : sec_angle;
+  ld.color = red;
+  ld.width = static_cast<lv_coord_t>(R * 0.024f);
+  lv_point_t s1 = polar(cx, cy, sd + 180.f, R * 0.31f);
+  lv_point_t s2 = polar(cx, cy, sd, R * 0.645f);
+  lv_draw_line(ctx, &ld, &s1, &s2);
+  lv_point_t tip = polar(cx, cy, sd, R * 0.645f);
+  draw_disc(ctx, tip.x, tip.y, R * 0.105f, red);
+  draw_disc(ctx, cx, cy, R * 0.035f, red);
+}
+
+void saver_update(bool force) {
+  struct tm t;
+  int ms = 0;
+  bool valid = local_now(&t, &ms);
+  int minute = t.tm_hour * 60 + t.tm_min;
+  if (disp.saver == kSaverDigital) {
+    if (!force && minute == saver_last_min) return;
+    saver_last_min = minute;
+    char buf[48];
+    if (valid) {
+      snprintf(buf, sizeof(buf), "%02d:%02d", t.tm_hour, t.tm_min);
+      lv_label_set_text(dig_time, buf);
+      snprintf(buf, sizeof(buf), "%s, %d. %s", kWeekday[t.tm_wday], t.tm_mday, kMonth[t.tm_mon]);
+      lv_label_set_text(dig_date, buf);
+    } else {
+      lv_label_set_text(dig_time, "--:--");
+      lv_label_set_text(dig_date, "Uhrzeit wird synchronisiert");
+    }
+    // Small drift every minute against burn-in.
+    int k = minute % 9;
+    lv_obj_align(saver_digital, LV_ALIGN_CENTER, (k % 3 - 1) * 14, (k / 3 - 1) * 14);
+    return;
+  }
+  if (disp.saver != kSaverAnalog) return;
+  if (force || minute != saver_last_min) {
+    saver_last_min = minute;
+    sec_angle = second_angle(t, ms);
+    sec_area = second_area(saver_analog, sec_angle);
+    lv_obj_invalidate(saver_analog);  // hour/minute hands moved
+    return;
+  }
+  float deg = second_angle(t, ms);
+  if (fabsf(deg - sec_angle) < 0.3f) return;  // resting at 12, or no visible step
+  lv_obj_invalidate_area(saver_analog, &sec_area);  // erase the old hand
+  sec_angle = deg;
+  sec_area = second_area(saver_analog, deg);
+  lv_obj_invalidate_area(saver_analog, &sec_area);  // draw the new one
+}
+
+void saver_tick(lv_timer_t*) { saver_update(false); }
+
 void screen_off() {
   if (scr_off) return;
   scr_off = true;
-  lv_obj_clear_flag(sleep_layer, LV_OBJ_FLAG_HIDDEN);
-  if (disp.hint) {
-    lv_obj_clear_flag(sleep_hint, LV_OBJ_FLAG_HIDDEN);
+  bool clock = disp.saver != kSaverBlack;
+  if (clock) {
+    hide(sleep_hint);
+  } else if (disp.hint) {
+    show(sleep_hint);
     move_hint();
   } else {
-    lv_obj_add_flag(sleep_hint, LV_OBJ_FLAG_HIDDEN);
+    hide(sleep_hint);
   }
-  panel_backlight(disp.hint ? kHintBacklight : 0, 600);
-  console_printf("Screen off (hint %d)\n", disp.hint ? 1 : 0);
+  if (disp.saver == kSaverDigital) show(saver_digital); else hide(saver_digital);
+  if (disp.saver == kSaverAnalog) show(saver_analog); else hide(saver_analog);
+  lv_scr_load(sleep_layer);
+  if (clock) {
+    saver_last_min = -1;
+    sec_angle = -1.f;
+    saver_update(true);
+    // Digital: once a second is enough; analog: ~12 fps sweep (dirty rects only).
+    lv_timer_set_period(saver_timer, disp.saver == kSaverAnalog ? 80 : 1000);
+    lv_timer_resume(saver_timer);
+  }
+  panel_backlight(clock ? kClockBacklight : disp.hint ? kHintBacklight : 0, 600);
+  console_printf("Screen off (saver %d hint %d)\n", disp.saver, disp.hint ? 1 : 0);
 }
 
-void hide_sleep_layer(void*) { lv_obj_add_flag(sleep_layer, LV_OBJ_FLAG_HIDDEN); }
+void hide_sleep_layer(void*) { lv_scr_load(main_screen); }
 
 void screen_on() {
   scr_off = false;
   last_activity = now_ms();
+  lv_timer_pause(saver_timer);
   panel_backlight(100, 150);
   lv_async_call(hide_sleep_layer, nullptr);  // not from inside the input read
   console_puts("Screen on");
@@ -1619,16 +1784,14 @@ void screen_on() {
 void power_tick(lv_timer_t*) {
   uint32_t now = now_ms();
   if (scr_off) {
-    if (disp.hint && now - hint_moved_ms >= kHintMoveMs) move_hint();
+    if (disp.saver == kSaverBlack && disp.hint && now - hint_moved_ms >= kHintMoveMs) move_hint();
     return;
   }
   if (scr_timeout_s != 0 && !wake_swallow && now - last_activity >= scr_timeout_s * 1000u) screen_off();
 }
 
 void build_sleep_layer() {
-  sleep_layer = lv_obj_create(lv_layer_top());
-  lv_obj_set_pos(sleep_layer, 0, 0);
-  lv_obj_set_size(sleep_layer, kScreen, kScreen);
+  sleep_layer = lv_obj_create(nullptr);  // a screen of its own
   lv_obj_set_style_bg_color(sleep_layer, lv_color_hex(0x000000), 0);
   lv_obj_set_style_bg_opa(sleep_layer, LV_OPA_COVER, 0);
   lv_obj_set_style_border_width(sleep_layer, 0, 0);
@@ -1636,13 +1799,131 @@ void build_sleep_layer() {
   lv_obj_set_style_pad_all(sleep_layer, 0, 0);
   lv_obj_clear_flag(sleep_layer, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_clear_flag(sleep_layer, LV_OBJ_FLAG_CLICKABLE);
-  sleep_hint = make_label(sleep_layer, &font_dejavu_14, lv_color_hex(0x9A9A9A));
+  sleep_hint = make_label(sleep_layer, &font_inter_14, lv_color_hex(0x9A9A9A));
   lv_label_set_text(sleep_hint, "wake me up");
-  lv_obj_add_flag(sleep_layer, LV_OBJ_FLAG_HIDDEN);
+
+  saver_digital = lv_obj_create(sleep_layer);
+  style_plain(saver_digital);
+  lv_obj_set_size(saver_digital, 440, 240);
+  dig_time = make_label(saver_digital, &font_clock_150, lv_color_hex(kText));
+  lv_label_set_text(dig_time, "--:--");
+  lv_obj_align(dig_time, LV_ALIGN_TOP_MID, 0, 10);
+  dig_date = make_label(saver_digital, &font_inter_20, lv_color_hex(kTextDim));
+  lv_obj_align(dig_date, LV_ALIGN_BOTTOM_MID, 0, -16);
+  lv_obj_set_style_text_align(dig_date, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_width(dig_date, 440);
+  hide(saver_digital);
+
+  saver_analog = lv_obj_create(sleep_layer);
+  style_plain(saver_analog);
+  lv_obj_set_style_bg_opa(saver_analog, LV_OPA_TRANSP, 0);
+  lv_obj_set_size(saver_analog, kClockD, kClockD);
+  lv_obj_center(saver_analog);
+  lv_obj_add_event_cb(saver_analog, analog_draw, LV_EVENT_DRAW_MAIN, nullptr);
+  hide(saver_analog);
+
+  saver_timer = lv_timer_create(saver_tick, 1000, nullptr);
+  lv_timer_pause(saver_timer);
   disp = settings_load_display();
   scr_timeout_s = disp.timeout_s;
   last_activity = now_ms();
   lv_timer_create(power_tick, 250, nullptr);
+}
+
+// --- Uhrzeit (NTP server and time zone) ---
+void refresh_time_settings() {
+  char buf[96];
+  snprintf(buf, sizeof(buf), "%s \xC2\xB7 %s", tset.server, tset.tz_name);
+  if (set_time_val != nullptr) lv_label_set_text(set_time_val, buf);
+  for (int i = 0; i < 4; ++i) {
+    if (time_srv_btn[i] == nullptr) continue;
+    if (strcmp(tset.server, kNtpServers[i]) == 0) lv_obj_add_state(time_srv_btn[i], LV_STATE_CHECKED);
+    else lv_obj_clear_state(time_srv_btn[i], LV_STATE_CHECKED);
+    if (strcmp(tset.tz_name, kTzChoices[i].name) == 0) lv_obj_add_state(time_tz_btn[i], LV_STATE_CHECKED);
+    else lv_obj_clear_state(time_tz_btn[i], LV_STATE_CHECKED);
+  }
+  if (time_status == nullptr) return;
+  struct tm t;
+  if (time_saving) {
+    snprintf(buf, sizeof(buf), "Speichere ...");
+  } else if (local_now(&t, nullptr)) {
+    snprintf(buf, sizeof(buf), "%02d:%02d:%02d \xC2\xB7 %s", t.tm_hour, t.tm_min, t.tm_sec,
+             clock_synced() ? "synchronisiert" : "noch nicht synchronisiert");
+  } else {
+    snprintf(buf, sizeof(buf), "Noch keine Zeit vom Server");
+  }
+  lv_label_set_text(time_status, buf);
+}
+
+void save_time() {
+  if (settings_pending) return;
+  SettingsRequest r = {};
+  r.kind = SettingsRequest::SetTime;
+  r.time = tset;
+  time_saving = true;
+  queue_settings(r);
+  clock_apply_tz(tset.tz);
+  refresh_time_settings();
+}
+
+void open_time() {
+  nav = Nav::Time;
+  hide_settings();
+  bool preset = false;
+  for (int i = 0; i < 4; ++i) preset = preset || strcmp(tset.server, kNtpServers[i]) == 0;
+  lv_textarea_set_text(time_ta, preset ? "" : tset.server);
+  refresh_time_settings();
+  show(time_root);
+}
+
+void on_srv_btn(lv_event_t* e) {
+  if (gesture_consumed) return;
+  int i = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
+  snprintf(tset.server, sizeof(tset.server), "%s", kNtpServers[i]);
+  lv_textarea_set_text(time_ta, "");
+  console_printf("Time server %s\n", tset.server);
+  save_time();
+}
+
+void on_tz_btn(lv_event_t* e) {
+  if (gesture_consumed) return;
+  int i = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
+  snprintf(tset.tz_name, sizeof(tset.tz_name), "%s", kTzChoices[i].name);
+  snprintf(tset.tz, sizeof(tset.tz), "%s", kTzChoices[i].posix);
+  console_printf("Time zone %s\n", tset.tz_name);
+  save_time();
+}
+
+void on_time_ready(lv_event_t*) {
+  const char* q = lv_textarea_get_text(time_ta);
+  if (q[0] == '\0') return;
+  snprintf(tset.server, sizeof(tset.server), "%s", q);
+  lv_keyboard_set_textarea(kb, nullptr);
+  hide(kb);
+  console_printf("Time server %s (custom)\n", tset.server);
+  save_time();
+}
+
+// 1 s: home header clock, time settings status.
+void clock_tick(lv_timer_t*) {
+  static int last_min = -2;
+  struct tm t;
+  bool valid = local_now(&t, nullptr);
+  int minute = valid ? t.tm_yday * 1440 + t.tm_hour * 60 + t.tm_min : -1;
+  if (minute != last_min && home_time != nullptr) {
+    last_min = minute;
+    char buf[32];
+    if (valid) {
+      snprintf(buf, sizeof(buf), "%02d:%02d", t.tm_hour, t.tm_min);
+      lv_label_set_text(home_time, buf);
+      snprintf(buf, sizeof(buf), "%s, %d. %s", kWeekdayShort[t.tm_wday], t.tm_mday, kMonthShort[t.tm_mon]);
+      lv_label_set_text(home_date, buf);
+    } else {
+      lv_label_set_text(home_time, "--:--");
+      lv_label_set_text(home_date, "");
+    }
+  }
+  if (nav == Nav::Time && !scr_off) refresh_time_settings();
 }
 
 void open_settings() {
@@ -1655,6 +1936,7 @@ void open_settings() {
   lv_label_set_text(set_wifi_val, cur_ssid[0] != '\0' ? cur_ssid : "nicht verbunden");
   lv_label_set_text(set_loc_val, cur_place);
   refresh_display_settings();
+  refresh_time_settings();
   show(set_root);
 }
 
@@ -1670,20 +1952,20 @@ void fill_wifi_list() {
     const WifiAp& ap = ui_aps[i];
     const char* bars = ap.rssi >= -55 ? ICON_WIFI3 : ap.rssi >= -67 ? ICON_WIFI2 : ap.rssi >= -78 ? ICON_WIFI1 : ICON_WIFI0;
     lv_obj_t* row = make_row(wl_list, 56, bars, kCyan, on_wifi_row, i);
-    lv_obj_t* name = make_label(row, &font_dejavu_20, lv_color_hex(kText));
-    lv_obj_set_width(name, 300);
+    lv_obj_t* name = make_label(row, &font_inter_sb16, lv_color_hex(kText));
+    lv_obj_set_width(name, 260);
     lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
     lv_label_set_text(name, ap.ssid);
-    lv_obj_align(name, LV_ALIGN_LEFT_MID, 40, 0);
+    lv_obj_align(name, LV_ALIGN_LEFT_MID, 54, 0);
     char info[24];
     snprintf(info, sizeof(info), "%d dBm", ap.rssi);
-    lv_obj_t* dbm = make_label(row, &font_dejavu_14, lv_color_hex(kTextDim));
+    lv_obj_t* dbm = make_label(row, &font_inter_14, lv_color_hex(kTextDim));
     lv_label_set_text(dbm, info);
-    lv_obj_align(dbm, LV_ALIGN_RIGHT_MID, ap.secure ? -32 : -4, 0);
+    lv_obj_align(dbm, LV_ALIGN_RIGHT_MID, (ap.secure || strcmp(ap.ssid, cur_ssid) == 0) ? -46 : -16, 0);
     if (ap.secure || strcmp(ap.ssid, cur_ssid) == 0) {
       lv_obj_t* ic = make_label(row, &font_icons_24, lv_color_hex(strcmp(ap.ssid, cur_ssid) == 0 ? kGreen : kTextDim));
       lv_label_set_text(ic, strcmp(ap.ssid, cur_ssid) == 0 ? ICON_CHECK : ICON_LOCK);
-      lv_obj_align(ic, LV_ALIGN_RIGHT_MID, 0, 0);
+      lv_obj_align(ic, LV_ALIGN_RIGHT_MID, -14, 0);
     }
     char key[16];
     snprintf(key, sizeof(key), "wifi:%d", i);
@@ -1738,14 +2020,14 @@ void fill_loc_list() {
   lv_obj_clean(loc_list);
   for (int i = 0; i < ui_place_n; ++i) {
     lv_obj_t* row = make_row(loc_list, 64, ICON_PLACE, kOrange, on_loc_row, i);
-    lv_obj_t* name = make_label(row, &font_dejavu_20, lv_color_hex(kText));
+    lv_obj_t* name = make_label(row, &font_inter_20, lv_color_hex(kText));
     lv_label_set_text(name, ui_places[i].name);
-    lv_obj_align(name, LV_ALIGN_TOP_LEFT, 40, 2);
-    lv_obj_t* reg_l = make_label(row, &font_dejavu_14, lv_color_hex(kTextDim));
-    lv_obj_set_width(reg_l, 360);
+    lv_obj_align(name, LV_ALIGN_TOP_LEFT, 54, 10);
+    lv_obj_t* reg_l = make_label(row, &font_inter_14, lv_color_hex(kTextDim));
+    lv_obj_set_width(reg_l, 340);
     lv_label_set_long_mode(reg_l, LV_LABEL_LONG_DOT);
     lv_label_set_text(reg_l, ui_places[i].region);
-    lv_obj_align(reg_l, LV_ALIGN_BOTTOM_LEFT, 40, -2);
+    lv_obj_align(reg_l, LV_ALIGN_BOTTOM_LEFT, 54, -10);
     char key[16];
     snprintf(key, sizeof(key), "loc:%d", i);
     reg(key, row);
@@ -1797,6 +2079,7 @@ void on_kb_event(lv_event_t* e) {
   if (code == LV_EVENT_READY) {
     if (ta == wp_ta) on_wifi_ready(e);
     if (ta == loc_ta) on_loc_ready(e);
+    if (ta == time_ta) on_time_ready(e);
   } else if (code == LV_EVENT_CANCEL) {
     lv_keyboard_set_textarea(kb, nullptr);
     hide(kb);
@@ -1815,6 +2098,7 @@ void on_settings_row(lv_event_t* e) {
   if (which == 0) open_wifi_list();
   if (which == 1) open_location();
   if (which == 2) open_display();
+  if (which == 3) open_time();
 }
 
 void on_msg_wifi(lv_event_t*) {
@@ -1832,75 +2116,121 @@ lv_obj_t* make_ta(lv_obj_t* parent, int y, const char* placeholder) {
   lv_obj_set_size(ta, kScreen - 2 * kMargin, 52);
   lv_textarea_set_one_line(ta, true);
   lv_textarea_set_placeholder_text(ta, placeholder);
-  lv_obj_set_style_text_font(ta, &font_dejavu_20, 0);
+  lv_obj_set_style_text_font(ta, &font_inter_20, 0);
+  style_glass(ta, 14);
+  lv_obj_set_style_pad_all(ta, 12, 0);
+  lv_obj_set_style_text_color(ta, lv_color_hex(kText), 0);
+  lv_obj_set_style_border_color(ta, lv_color_hex(kAccent), LV_STATE_FOCUSED);
   lv_obj_add_event_cb(ta, on_ta_click, LV_EVENT_CLICKED, nullptr);
   return ta;
 }
 
+lv_obj_t* make_choice(lv_obj_t* parent, int x, int y, int w, int h, const char* text, lv_event_cb_t cb, int user,
+                      const char* key) {
+  lv_obj_t* b = lv_btn_create(parent);
+  lv_obj_set_size(b, w, h);
+  lv_obj_set_pos(b, x, y);
+  style_glass(b, 16);
+  style_checked(b);
+  lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, reinterpret_cast<void*>(static_cast<intptr_t>(user)));
+  watch(b);
+  reg(key, b);
+  lv_obj_t* t = make_label(b, &font_inter_sb16, lv_color_hex(kText));
+  lv_label_set_text(t, text);
+  lv_obj_center(t);
+  return b;
+}
+
+lv_obj_t* make_caption(lv_obj_t* parent, int y, const char* text) {
+  lv_obj_t* l = make_label(parent, &font_inter_14, lv_color_hex(kTextDim));
+  lv_obj_set_pos(l, 24, y);
+  lv_label_set_text(l, text);
+  return l;
+}
+
 void build_settings_screens(lv_obj_t* screen) {
   set_root = make_screen_root(screen, "Einstellungen");
-  const char* names[3] = {"WLAN", "Wetter-Ort", "Bildschirm"};
-  const char* icons[3] = {ICON_WIFI3, ICON_PLACE, ICON_SCREEN};
-  const uint32_t colors[3] = {kCyan, kOrange, kPurple};
-  lv_obj_t** vals[3] = {&set_wifi_val, &set_loc_val, &set_disp_val};
-  const char* keys[3] = {"set:wifi", "set:loc", "set:disp"};
-  for (int i = 0; i < 3; ++i) {
-    lv_obj_t* row = make_row(set_root, 88, icons[i], colors[i], on_settings_row, i);
-    lv_obj_set_pos(row, kMargin, 70 + i * 104);
+  const char* names[4] = {"WLAN", "Wetter-Ort", "Bildschirm", "Uhrzeit"};
+  const char* icons[4] = {ICON_WIFI3, ICON_PLACE, ICON_SCREEN, ICON_SCHEDULE};
+  const uint32_t colors[4] = {kAccent, kAmber, kPurple, kGreen};
+  lv_obj_t** vals[4] = {&set_wifi_val, &set_loc_val, &set_disp_val, &set_time_val};
+  const char* keys[4] = {"set:wifi", "set:loc", "set:disp", "set:time"};
+  for (int i = 0; i < 4; ++i) {
+    lv_obj_t* row = make_row(set_root, 80, icons[i], colors[i], on_settings_row, i);
+    lv_obj_set_pos(row, kMargin, 64 + i * 92);
     reg(keys[i], row);
-    lv_obj_t* name = make_label(row, &font_dejavu_20, lv_color_hex(kText));
+    lv_obj_t* name = make_label(row, &font_inter_sb16, lv_color_hex(kText));
     lv_label_set_text(name, names[i]);
-    lv_obj_align(name, LV_ALIGN_TOP_LEFT, 44, 8);
-    *vals[i] = make_label(row, &font_dejavu_14, lv_color_hex(kTextDim));
+    lv_obj_align(name, LV_ALIGN_TOP_LEFT, 56, 16);
+    *vals[i] = make_label(row, &font_inter_14, lv_color_hex(kTextDim));
     lv_obj_set_width(*vals[i], 320);
     lv_label_set_long_mode(*vals[i], LV_LABEL_LONG_DOT);
-    lv_obj_align(*vals[i], LV_ALIGN_BOTTOM_LEFT, 44, -8);
+    lv_obj_align(*vals[i], LV_ALIGN_BOTTOM_LEFT, 56, -16);
     lv_obj_t* chev = make_label(row, &font_icons_24, lv_color_hex(kTextDim));
     lv_label_set_text(chev, ICON_CHEVRON);
-    lv_obj_align(chev, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_align(chev, LV_ALIGN_RIGHT_MID, -14, 0);
   }
 
-  // Bildschirm: timeout choices and the off-mode hint toggle.
+  // Bildschirm: timeout, screensaver and the black-mode hint.
   disp_root = make_screen_root(screen, "Bildschirm");
-  lv_obj_t* to_label = make_label(disp_root, &font_dejavu_14, lv_color_hex(kTextDim));
-  lv_obj_set_pos(to_label, 24, 60);
-  lv_label_set_text(to_label, "Ausschalten nach");
+  make_caption(disp_root, 58, "Ausschalten nach");
   for (int i = 0; i < kTimeoutChoiceN; ++i) {
-    lv_obj_t* b = lv_btn_create(disp_root);
-    lv_obj_set_size(b, 136, 64);
-    lv_obj_set_pos(b, kMargin + (i % 3) * 148, 88 + (i / 3) * 76);
-    style_glass(b, 18);
-    lv_obj_set_style_bg_color(b, lv_color_hex(kPurple), LV_STATE_CHECKED);
-    lv_obj_set_style_bg_opa(b, LV_OPA_70, LV_STATE_CHECKED);
-    lv_obj_add_event_cb(b, on_timeout_btn, LV_EVENT_CLICKED, reinterpret_cast<void*>(static_cast<intptr_t>(i)));
-    watch(b);
     char key[8];
     snprintf(key, sizeof(key), "to:%d", i);
-    reg(key, b);
-    disp_to_btn[i] = b;
-    lv_obj_t* t = make_label(b, &font_dejavu_20, lv_color_hex(kText));
-    lv_label_set_text(t, timeout_text(kTimeoutChoices[i]));
-    lv_obj_center(t);
+    disp_to_btn[i] = make_choice(disp_root, kMargin + (i % 3) * 148, 80 + (i / 3) * 60, 136, 50,
+                                 timeout_text(kTimeoutChoices[i]), on_timeout_btn, i, key);
   }
-  lv_obj_t* hint_row = make_row(disp_root, 88, nullptr, 0, on_hint_row, 0);
-  lv_obj_set_pos(hint_row, kMargin, 252);
+  make_caption(disp_root, 206, "Bildschirmschoner");
+  static const char* kSaverLabel[3] = {"Schwarz", "Digital", "Analog"};
+  for (int i = 0; i < 3; ++i) {
+    char key[10];
+    snprintf(key, sizeof(key), "saver:%d", i);
+    disp_saver_btn[i] = make_choice(disp_root, kMargin + i * 148, 228, 136, 56, kSaverLabel[i], on_saver_btn, i, key);
+  }
+  lv_obj_t* hint_row = make_row(disp_root, 84, nullptr, 0, on_hint_row, 0);
+  lv_obj_set_pos(hint_row, kMargin, 300);
   reg("disp:hint", hint_row);
-  lv_obj_t* hn = make_label(hint_row, &font_dejavu_20, lv_color_hex(kText));
+  lv_obj_t* hn = make_label(hint_row, &font_inter_sb16, lv_color_hex(kText));
   lv_label_set_text(hn, "Hinweis anzeigen");
-  lv_obj_align(hn, LV_ALIGN_TOP_LEFT, 16, 14);
-  lv_obj_t* hd = make_label(hint_row, &font_dejavu_14, lv_color_hex(kTextDim));
-  lv_label_set_text(hd, "Schwach leuchtendes \"wake me up\" statt ganz schwarz");
+  lv_obj_align(hn, LV_ALIGN_TOP_LEFT, 16, 16);
+  lv_obj_t* hd = make_label(hint_row, &font_inter_14, lv_color_hex(kTextDim));
+  lv_label_set_text(hd, "Bei Schwarz: dezentes \"wake me up\"");
   lv_obj_set_width(hd, 320);
-  lv_label_set_long_mode(hd, LV_LABEL_LONG_WRAP);
-  lv_obj_align(hd, LV_ALIGN_BOTTOM_LEFT, 16, -10);
+  lv_label_set_long_mode(hd, LV_LABEL_LONG_DOT);
+  lv_obj_align(hd, LV_ALIGN_BOTTOM_LEFT, 16, -16);
   disp_hint_sw = lv_switch_create(hint_row);
-  lv_obj_set_size(disp_hint_sw, 64, 34);
-  lv_obj_align(disp_hint_sw, LV_ALIGN_RIGHT_MID, -12, 0);
+  lv_obj_set_size(disp_hint_sw, 60, 32);
+  lv_obj_align(disp_hint_sw, LV_ALIGN_RIGHT_MID, -14, 0);
   lv_obj_clear_flag(disp_hint_sw, LV_OBJ_FLAG_CLICKABLE);  // the whole row toggles
-  lv_obj_set_style_bg_color(disp_hint_sw, lv_color_hex(kGreen), static_cast<lv_style_selector_t>(LV_PART_INDICATOR) | LV_STATE_CHECKED);
+  lv_obj_set_style_bg_color(disp_hint_sw, lv_color_hex(kBorder), static_cast<lv_style_selector_t>(LV_PART_MAIN));
+  lv_obj_set_style_bg_color(disp_hint_sw, lv_color_hex(kAccent), static_cast<lv_style_selector_t>(LV_PART_INDICATOR) | LV_STATE_CHECKED);
+
+  // Uhrzeit: NTP server and time zone.
+  time_root = make_screen_root(screen, "Uhrzeit");
+  make_caption(time_root, 58, "Zeitserver (NTP)");
+  for (int i = 0; i < 4; ++i) {
+    char key[8];
+    snprintf(key, sizeof(key), "ntp:%d", i);
+    time_srv_btn[i] = make_choice(time_root, kMargin + (i % 2) * 226, 80 + (i / 2) * 56, 214, 48, kNtpServers[i],
+                                  on_srv_btn, i, key);
+  }
+  time_ta = make_ta(time_root, 194, "Eigener Server");
+  lv_obj_set_height(time_ta, 50);
+  reg("ntp:custom", time_ta);
+  make_caption(time_root, 258, "Zeitzone");
+  for (int i = 0; i < 4; ++i) {
+    char key[8];
+    snprintf(key, sizeof(key), "tz:%d", i);
+    time_tz_btn[i] = make_choice(time_root, kMargin + (i % 2) * 226, 280 + (i / 2) * 56, 214, 48, kTzChoices[i].label,
+                                 on_tz_btn, i, key);
+  }
+  time_status = make_label(time_root, &font_inter_14, lv_color_hex(kTextDim));
+  lv_obj_set_pos(time_status, 24, 404);
+  lv_obj_set_width(time_status, 432);
+  lv_label_set_long_mode(time_status, LV_LABEL_LONG_DOT);
 
   wl_root = make_screen_root(screen, "WLAN");
-  wl_status = make_label(wl_root, &font_dejavu_14, lv_color_hex(kTextDim));
+  wl_status = make_label(wl_root, &font_inter_14, lv_color_hex(kTextDim));
   lv_obj_set_pos(wl_status, 24, 48);
   wl_list = make_list(wl_root, 76, 380);
 
@@ -1909,14 +2239,14 @@ void build_settings_screens(lv_obj_t* screen) {
   wp_ta = make_ta(wp_root, 56, "Passwort");
   lv_textarea_set_password_mode(wp_ta, true);
   lv_textarea_set_password_bullet(wp_ta, "*");
-  wp_status = make_label(wp_root, &font_dejavu_14, lv_color_hex(kTextDim));
+  wp_status = make_label(wp_root, &font_inter_14, lv_color_hex(kTextDim));
   lv_obj_set_pos(wp_status, 24, 118);
   lv_obj_set_width(wp_status, 432);
   lv_label_set_long_mode(wp_status, LV_LABEL_LONG_WRAP);
 
   loc_root = make_screen_root(screen, "Wetter-Ort");
   loc_ta = make_ta(loc_root, 56, "Ort suchen");
-  loc_status = make_label(loc_root, &font_dejavu_14, lv_color_hex(kTextDim));
+  loc_status = make_label(loc_root, &font_inter_14, lv_color_hex(kTextDim));
   lv_obj_set_pos(loc_status, 24, 116);
   loc_list = make_list(loc_root, 140, 316);
 
@@ -1964,8 +2294,11 @@ void ui_describe(char* out, size_t n) {
     snprintf(out, n, "wifi %d scanning=%d", ui_ap_n, wl_scanning ? 1 : 0);
   } else if (nav == Nav::WifiPass) {
     snprintf(out, n, "wifipass connecting=%d", wp_connecting ? 1 : 0);
+  } else if (nav == Nav::Time) {
+    snprintf(out, n, "time server=%s tz=%s synced=%d", tset.server, tset.tz_name, clock_synced() ? 1 : 0);
   } else if (nav == Nav::Display) {
-    snprintf(out, n, "display timeout=%u hint=%d", static_cast<unsigned>(disp.timeout_s), disp.hint ? 1 : 0);
+    snprintf(out, n, "display timeout=%u hint=%d saver=%d", static_cast<unsigned>(disp.timeout_s), disp.hint ? 1 : 0,
+             disp.saver);
   } else if (nav == Nav::Location) {
     snprintf(out, n, "location %d searching=%d", ui_place_n, (loc_searching || settings_pending) ? 1 : 0);
   } else {
@@ -2012,108 +2345,106 @@ void ui_init() {
   lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
   watch(screen);
 
-  make_orb(screen, 250, -80, 280, kPurple, LV_OPA_30);
-  make_orb(screen, -90, 300, 240, kCyan, LV_OPA_20);
-  make_orb(screen, 300, 360, 180, kOrange, LV_OPA_10);
+  main_screen = screen;
+  tset = settings_load_time();
+  clock_apply_tz(tset.tz);
 
   home_root = lv_obj_create(screen);
   lv_obj_set_pos(home_root, 0, 0);
   lv_obj_set_size(home_root, kScreen, kScreen);
   style_plain(home_root);
 
+  home_date = make_label(home_root, &font_inter_16, lv_color_hex(kTextDim));
+  lv_obj_set_pos(home_date, 24, 24);
+  home_time = make_label(home_root, &font_inter_16, lv_color_hex(kTextDim));
+  lv_label_set_text(home_time, "--:--");
+  lv_obj_align(home_time, LV_ALIGN_TOP_RIGHT, -24, 24);
+
+  // One weather card: now (icon, temperature, place and condition), then
+  // today and tomorrow side by side under a divider. Tap a day for details.
   lv_obj_t* weather = lv_obj_create(home_root);
-  lv_obj_set_pos(weather, kMargin, 16);
-  lv_obj_set_size(weather, kScreen - 2 * kMargin, 184);
+  lv_obj_set_pos(weather, 24, 56);
+  lv_obj_set_size(weather, kScreen - 48, 222);
   style_glass(weather, 28);
   lv_obj_clear_flag(weather, LV_OBJ_FLAG_CLICKABLE);
 
-  weather_place = make_label(weather, &font_dejavu_20, lv_color_hex(kTextDim));
-  lv_obj_set_pos(weather_place, 22, 18);
-  lv_obj_set_width(weather_place, 132);
-  lv_label_set_long_mode(weather_place, LV_LABEL_LONG_DOT);
-  lv_label_set_text(weather_place, "Buchs SG");
+  weather_big = make_label(weather, &font_icons_80, lv_color_hex(kAmber));
+  lv_obj_set_pos(weather_big, 18, 18);
+  weather_icon(weather_big, -1);
 
-  weather_temp = make_label(weather, &lv_font_montserrat_28, lv_color_hex(kText));
-  lv_obj_set_pos(weather_temp, 22, 58);
+  weather_temp = make_label(weather, &font_inter_xl_72, lv_color_hex(kText));
+  lv_obj_set_pos(weather_temp, 120, 10);
   lv_label_set_text(weather_temp, "--");
 
-  weather_deg = make_label(weather, &font_dejavu_20, lv_color_hex(kText));
-  lv_label_set_text(weather_deg, "°");
-  lv_obj_align_to(weather_deg, weather_temp, LV_ALIGN_OUT_RIGHT_TOP, 4, 2);
+  weather_place = make_label(weather, &font_inter_16, lv_color_hex(kTextDim));
+  lv_obj_set_pos(weather_place, 124, 96);
+  lv_obj_set_width(weather_place, 290);
+  lv_label_set_long_mode(weather_place, LV_LABEL_LONG_DOT);
 
-  weather_cond = make_label(weather, &font_dejavu_14, lv_color_hex(kTextDim));
-  lv_obj_set_pos(weather_cond, 22, 108);
-  lv_obj_set_width(weather_cond, 128);
-  lv_label_set_long_mode(weather_cond, LV_LABEL_LONG_WRAP);
-  lv_label_set_text(weather_cond, "Wetter wird geladen");
+  make_divider(weather, 20, 130, kScreen - 48 - 40, 1);
+  make_divider(weather, (kScreen - 48) / 2, 144, 1, 62);
 
-  // Today / tomorrow panels on the right of the card.
   static const char* kDayName[2] = {"Heute", "Morgen"};
   for (int d = 0; d < 2; ++d) {
     lv_obj_t* panel = lv_obj_create(weather);
-    lv_obj_set_pos(panel, 160 + d * 136, 14);
-    lv_obj_set_size(panel, 128, 154);
+    lv_obj_set_pos(panel, 8 + d * 208, 136);
+    lv_obj_set_size(panel, 200, 78);
     lv_obj_set_style_bg_color(panel, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_bg_opa(panel, LV_OPA_10, 0);
-    lv_obj_set_style_radius(panel, 20, 0);
+    lv_obj_set_style_bg_opa(panel, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_opa(panel, LV_OPA_10, LV_STATE_PRESSED);
+    lv_obj_set_style_radius(panel, 16, 0);
     lv_obj_set_style_border_width(panel, 0, 0);
     lv_obj_set_style_pad_all(panel, 0, 0);
     lv_obj_set_style_shadow_width(panel, 0, 0);
     lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_bg_opa(panel, LV_OPA_30, LV_STATE_PRESSED);
     lv_obj_add_event_cb(panel, on_day_panel, LV_EVENT_CLICKED, reinterpret_cast<void*>(static_cast<intptr_t>(d)));
     watch(panel);
     reg(d == 0 ? "day:0" : "day:1", panel);
 
-    lv_obj_t* name = make_label(panel, &font_dejavu_14, lv_color_hex(kTextDim));
+    fc_icon[d] = make_label(panel, &font_icons_38, lv_color_hex(kAmber));
+    lv_obj_align(fc_icon[d], LV_ALIGN_LEFT_MID, 12, 0);
+    weather_icon(fc_icon[d], -1);
+
+    lv_obj_t* name = make_label(panel, &font_inter_14, lv_color_hex(kTextDim));
     lv_label_set_text(name, kDayName[d]);
-    lv_obj_align(name, LV_ALIGN_TOP_MID, 0, 8);
+    lv_obj_set_pos(name, 64, 8);
 
-    fc_icon[d] = lv_obj_create(panel);
-    style_plain(fc_icon[d]);
-    lv_obj_set_size(fc_icon[d], 60, 48);
-    lv_obj_align(fc_icon[d], LV_ALIGN_TOP_MID, 0, 30);
-    lv_obj_clear_flag(fc_icon[d], LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_clear_flag(fc_icon[d], LV_OBJ_FLAG_SCROLLABLE);
-
-    fc_temp[d] = make_label(panel, &font_dejavu_20, lv_color_hex(kText));
+    fc_temp[d] = make_label(panel, &font_inter_20, lv_color_hex(kText));
+    lv_label_set_recolor(fc_temp[d], true);
     lv_label_set_text(fc_temp[d], "--");
-    lv_obj_align(fc_temp[d], LV_ALIGN_TOP_MID, 0, 88);
+    lv_obj_set_pos(fc_temp[d], 64, 26);
 
-    fc_rain[d] = make_label(panel, &font_dejavu_14, lv_color_hex(kCyan));
+    lv_obj_t* drop = make_label(panel, &font_icons_16, lv_color_hex(kAccent));
+    lv_label_set_text(drop, ICON_DROP);
+    lv_obj_set_pos(drop, 63, 54);
+    fc_rain[d] = make_label(panel, &font_inter_14, lv_color_hex(kAccent));
     lv_label_set_text(fc_rain[d], "");
-    lv_obj_align(fc_rain[d], LV_ALIGN_TOP_MID, 0, 122);
+    lv_obj_set_pos(fc_rain[d], 82, 53);
   }
+  update_weather_line();
 
-  // Category buttons: Material Symbols icon with a German label, no counts.
-  // Row 1: Favoriten, Licht, Storen. Row 2 (centred): Schalter, Einstellungen.
+  // Five icon-only buttons in one row.
   struct HomeButton {
     const char* icon;
-    const char* label;
     const char* name;
     uint32_t color;
-    int x;
-    int y;
   };
   static const HomeButton kButtons[5] = {
-      {ICON_STAR, "Favoriten", "cat:fav", kYellow, 36, 214},
-      {ICON_BULB, "Licht", "cat:licht", kOrange, 180, 214},
-      {ICON_BLINDS, "Storen", "cat:storen", kCyan, 324, 214},
-      {ICON_TOGGLE, "Schalter", "cat:schalter", kPurple, 108, 346},
-      {ICON_SETTINGS, "Einstellungen", "cat:settings", 0x8E8E93, 252, 346},
+      {ICON_STAR, "cat:fav", kSectionAccent[0]},      {ICON_BULB, "cat:licht", kSectionAccent[1]},
+      {ICON_BLINDS, "cat:storen", kSectionAccent[2]}, {ICON_TOGGLE, "cat:schalter", kSectionAccent[3]},
+      {ICON_SETTINGS, "cat:settings", kPurple},
   };
   for (int i = 0; i < 5; ++i) {
     const HomeButton& b = kButtons[i];
     lv_obj_t* btn = lv_btn_create(home_root);
-    lv_obj_set_pos(btn, b.x, b.y);
-    lv_obj_set_size(btn, 120, 120);
+    lv_obj_set_pos(btn, 24 + i * 89, 300);
+    lv_obj_set_size(btn, 76, 76);
     style_tile(btn, b.color);
     lv_obj_add_event_cb(btn, on_category, LV_EVENT_CLICKED, reinterpret_cast<void*>(static_cast<intptr_t>(i)));
     watch(btn);
     reg(b.name, btn);
     card_btn[i] = btn;
-
-    lv_obj_t* icon = make_label(btn, &font_icons_60, lv_color_hex(kText));
+    lv_obj_t* icon = make_label(btn, &font_icons_38, lv_color_hex(b.color));
     lv_label_set_text(icon, b.icon);
     lv_obj_center(icon);
   }
@@ -2123,16 +2454,18 @@ void ui_init() {
   lv_obj_set_size(cat_root, kScreen, kScreen);
   style_plain(cat_root);
 
-  cat_title = make_label(cat_root, &font_dejavu_20, lv_color_hex(kText));
-  lv_obj_set_pos(cat_title, 24, 16);
+  cat_icon = make_label(cat_root, &font_icons_24, lv_color_hex(kAmber));
+  lv_obj_set_pos(cat_icon, 22, 20);
+  cat_title = make_label(cat_root, &font_inter_20, lv_color_hex(kText));
+  lv_obj_set_pos(cat_title, 54, 21);
   lv_label_set_text(cat_title, "");
 
-  cat_page = make_label(cat_root, &font_dejavu_14, lv_color_hex(kTextDim));
-  lv_obj_align(cat_page, LV_ALIGN_TOP_RIGHT, -24, 22);
+  cat_page = make_label(cat_root, &font_inter_14, lv_color_hex(kTextDim));
+  lv_obj_align(cat_page, LV_ALIGN_TOP_RIGHT, -24, 25);
   hide(cat_page);
 
-  cat_status = make_label(cat_root, &font_dejavu_14, lv_color_hex(kTextDim));
-  lv_obj_set_pos(cat_status, 24, 48);
+  cat_status = make_label(cat_root, &font_inter_14, lv_color_hex(kTextDim));
+  lv_obj_set_pos(cat_status, 24, 54);
   lv_obj_set_width(cat_status, 432);
   lv_label_set_long_mode(cat_status, LV_LABEL_LONG_DOT);
   lv_label_set_text(cat_status, "");
@@ -2145,22 +2478,23 @@ void ui_init() {
     lv_obj_t* btn = lv_btn_create(cat_root);
     lv_obj_set_pos(btn, x, y);
     lv_obj_set_size(btn, kTileW, kTileH);
-    style_glass(btn, 24);
+    style_glass(btn, 22);
     lv_obj_add_event_cb(btn, on_tile, LV_EVENT_CLICKED, reinterpret_cast<void*>(static_cast<intptr_t>(slot)));
     watch(btn);
     tiles[slot] = btn;
 
-    tile_name[slot] = make_label(btn, &font_dejavu_20, lv_color_hex(kText));
-    lv_obj_set_width(tile_name[slot], kTileW - 28);
-    lv_label_set_long_mode(tile_name[slot], LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_align(tile_name[slot], LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(tile_name[slot], LV_ALIGN_CENTER, 0, -18);
+    tile_icon[slot] = make_label(btn, &font_icons_32, lv_color_hex(kOffIcon));
+    lv_obj_set_pos(tile_icon[slot], 16, 14);
 
-    tile_sub[slot] = make_label(btn, &font_dejavu_14, lv_color_hex(kTextDim));
-    lv_obj_set_width(tile_sub[slot], kTileW - 28);
+    tile_name[slot] = make_label(btn, &font_inter_sb16, lv_color_hex(kText));
+    lv_obj_set_width(tile_name[slot], kTileW - 32);
+    lv_label_set_long_mode(tile_name[slot], LV_LABEL_LONG_WRAP);
+    lv_obj_set_pos(tile_name[slot], 16, 66);
+
+    tile_sub[slot] = make_label(btn, &font_inter_14, lv_color_hex(kTextDim));
+    lv_obj_set_width(tile_sub[slot], kTileW - 32);
     lv_label_set_long_mode(tile_sub[slot], LV_LABEL_LONG_DOT);
-    lv_obj_set_style_text_align(tile_sub[slot], LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(tile_sub[slot], LV_ALIGN_CENTER, 0, 28);
+    lv_obj_align(tile_sub[slot], LV_ALIGN_BOTTOM_LEFT, 16, -14);
     hide(btn);
   }
 
@@ -2168,34 +2502,37 @@ void ui_init() {
     lv_obj_t* box = lv_obj_create(cat_root);
     lv_obj_set_pos(box, kMargin, kContentY + row_slot * (kTileH + kGap));
     lv_obj_set_size(box, kScreen - 2 * kMargin, kTileH);
-    style_glass(box, 24);
+    style_glass(box, 22);
     lv_obj_clear_flag(box, LV_OBJ_FLAG_CLICKABLE);
     shutter_box[row_slot] = box;
 
-    shutter_title[row_slot] = make_label(box, &font_dejavu_20, lv_color_hex(kText));
-    lv_obj_set_pos(shutter_title[row_slot], 16, 12);
+    shutter_title[row_slot] = make_label(box, &font_inter_sb16, lv_color_hex(kText));
+    lv_obj_set_pos(shutter_title[row_slot], 18, 16);
     lv_obj_set_width(shutter_title[row_slot], 300);
     lv_label_set_long_mode(shutter_title[row_slot], LV_LABEL_LONG_DOT);
 
-    shutter_pos[row_slot] = make_label(box, &font_dejavu_14, lv_color_hex(kTextDim));
-    lv_obj_align(shutter_pos[row_slot], LV_ALIGN_TOP_RIGHT, -16, 16);
+    shutter_pos[row_slot] = make_label(box, &font_inter_14, lv_color_hex(kAccent));
+    lv_obj_align(shutter_pos[row_slot], LV_ALIGN_TOP_RIGHT, -18, 18);
 
     for (int which = 0; which < 2; ++which) {
       lv_obj_t* btn = lv_btn_create(box);
-      lv_obj_set_pos(btn, 16 + which * 206, 56);
-      lv_obj_set_size(btn, 196, 84);
-      style_shutter_button(btn, kShutterColor[which]);
+      lv_obj_set_pos(btn, 14 + which * 208, 52);
+      lv_obj_set_size(btn, 198, 88);
+      style_shutter_button(btn);
       intptr_t tag = static_cast<intptr_t>(row_slot * 2 + which);
       lv_obj_add_event_cb(btn, on_shutter, LV_EVENT_CLICKED, reinterpret_cast<void*>(tag));
       watch(btn);
-      lv_obj_t* label = make_label(btn, &font_dejavu_20, lv_color_hex(kText));
+      lv_obj_t* arrow = make_label(btn, &font_icons_32, lv_color_hex(kAccent));
+      lv_label_set_text(arrow, kShutterIcon[which]);
+      lv_obj_align(arrow, LV_ALIGN_CENTER, -28, 0);
+      lv_obj_t* label = make_label(btn, &font_inter_20, lv_color_hex(kText));
       lv_label_set_text(label, kShutterLabel[which]);
-      lv_obj_center(label);
+      lv_obj_align(label, LV_ALIGN_CENTER, 18, 0);
     }
     hide(box);
   }
 
-  empty_hint = make_label(cat_root, &font_dejavu_20, lv_color_hex(kTextDim));
+  empty_hint = make_label(cat_root, &font_inter_20, lv_color_hex(kTextDim));
   lv_obj_set_width(empty_hint, 400);
   lv_label_set_long_mode(empty_hint, LV_LABEL_LONG_WRAP);
   lv_obj_set_style_text_align(empty_hint, LV_TEXT_ALIGN_CENTER, 0);
@@ -2204,46 +2541,17 @@ void ui_init() {
 
   // Right-edge handle: shown by refresh_category() only when a next page
   // exists. (It used to mean "swipe back to home" and was always shown.)
-  next_hint = lv_obj_create(cat_root);
-  lv_obj_t* back_hint = next_hint;
-  lv_obj_set_pos(back_hint, 470, 190);
-  lv_obj_set_size(back_hint, 5, 80);
-  lv_obj_set_style_radius(back_hint, LV_RADIUS_CIRCLE, 0);
-  lv_obj_set_style_bg_color(back_hint, lv_color_hex(kText), 0);
-  lv_obj_set_style_bg_opa(back_hint, LV_OPA_30, 0);
-  lv_obj_set_style_border_width(back_hint, 0, 0);
-  lv_obj_clear_flag(back_hint, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_clear_flag(back_hint, LV_OBJ_FLAG_SCROLLABLE);
-  hide(back_hint);
-
-  // Mirror of back_hint on the left edge, shown by refresh_category() only
-  // when there is a previous page.
-  prev_hint = lv_obj_create(cat_root);
-  lv_obj_set_pos(prev_hint, 5, 190);
-  lv_obj_set_size(prev_hint, 5, 80);
-  lv_obj_set_style_radius(prev_hint, LV_RADIUS_CIRCLE, 0);
-  lv_obj_set_style_bg_color(prev_hint, lv_color_hex(kText), 0);
-  lv_obj_set_style_bg_opa(prev_hint, LV_OPA_30, 0);
-  lv_obj_set_style_border_width(prev_hint, 0, 0);
-  lv_obj_clear_flag(prev_hint, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_clear_flag(prev_hint, LV_OBJ_FLAG_SCROLLABLE);
+  next_hint = wx_handle(cat_root, 470);
+  hide(next_hint);
+  prev_hint = wx_handle(cat_root, 5);
   hide(prev_hint);
-
-  lv_obj_t* home_hint = lv_obj_create(cat_root);
-  lv_obj_set_pos(home_hint, 200, 468);
-  lv_obj_set_size(home_hint, 80, 5);
-  lv_obj_set_style_radius(home_hint, LV_RADIUS_CIRCLE, 0);
-  lv_obj_set_style_bg_color(home_hint, lv_color_hex(kText), 0);
-  lv_obj_set_style_bg_opa(home_hint, LV_OPA_30, 0);
-  lv_obj_set_style_border_width(home_hint, 0, 0);
-  lv_obj_clear_flag(home_hint, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_clear_flag(home_hint, LV_OBJ_FLAG_SCROLLABLE);
+  make_home_bar(cat_root);
 
   hide(cat_root);
 
   build_weather_screen(screen);
 
-  msg_status = make_label(screen, &font_dejavu_14, lv_color_hex(kTextDim));
+  msg_status = make_label(screen, &font_inter_14, lv_color_hex(kTextDim));
   lv_obj_set_pos(msg_status, 24, 28);
   lv_obj_set_width(msg_status, 432);
   lv_label_set_long_mode(msg_status, LV_LABEL_LONG_DOT);
@@ -2262,7 +2570,7 @@ void ui_init() {
   lv_label_set_long_mode(message_title, LV_LABEL_LONG_WRAP);
   lv_obj_align(message_title, LV_ALIGN_TOP_LEFT, 20, 16);
 
-  message_body = make_label(message, &font_dejavu_20, lv_color_hex(kText));
+  message_body = make_label(message, &font_inter_20, lv_color_hex(kText));
   lv_obj_set_width(message_body, 392);
   lv_label_set_long_mode(message_body, LV_LABEL_LONG_WRAP);
   lv_obj_align(message_body, LV_ALIGN_TOP_LEFT, 20, 80);
@@ -2274,7 +2582,7 @@ void ui_init() {
   lv_obj_add_event_cb(msg_wifi_btn, on_msg_wifi, LV_EVENT_CLICKED, nullptr);
   watch(msg_wifi_btn);
   reg("msg:wifi", msg_wifi_btn);
-  lv_obj_t* wifi_label = make_label(msg_wifi_btn, &font_dejavu_20, lv_color_hex(kText));
+  lv_obj_t* wifi_label = make_label(msg_wifi_btn, &font_inter_20, lv_color_hex(kText));
   lv_label_set_text(wifi_label, "WLAN");
   lv_obj_center(wifi_label);
 
@@ -2287,13 +2595,15 @@ void ui_init() {
   lv_obj_set_style_bg_opa(retry_btn, LV_OPA_50, 0);
   lv_obj_add_event_cb(retry_btn, on_retry, LV_EVENT_CLICKED, nullptr);
   watch(retry_btn);
-  lv_obj_t* retry_label = make_label(retry_btn, &font_dejavu_20, lv_color_hex(kText));
+  lv_obj_t* retry_label = make_label(retry_btn, &font_inter_20, lv_color_hex(kText));
   lv_label_set_text(retry_label, "Try again");
   lv_obj_center(retry_label);
   hide(message);
   hide(home_root);
   build_settings_screens(screen);
   build_sleep_layer();
+  lv_timer_create(clock_tick, 1000, nullptr);
+  clock_tick(nullptr);
 }
 
 bool ui_power_touch(bool pressed) {
@@ -2312,9 +2622,11 @@ bool ui_power_touch(bool pressed) {
 }
 
 void ui_power_describe(char* out, size_t n) {
-  snprintf(out, n, "scr=%s bl=%u to=%u", scr_off ? "off" : "on", static_cast<unsigned>(panel_backlight_level()),
-           static_cast<unsigned>(scr_timeout_s));
+  snprintf(out, n, "scr=%s bl=%u to=%u saver=%d", scr_off ? "off" : "on",
+           static_cast<unsigned>(panel_backlight_level()), static_cast<unsigned>(scr_timeout_s), disp.saver);
 }
+
+lv_obj_t* ui_overlay() { return scr_off ? sleep_layer : nullptr; }
 
 void ui_set_screen_timeout(uint16_t seconds) {
   scr_timeout_s = seconds;
@@ -2393,37 +2705,37 @@ void ui_set_forecast(bool ok, const WeatherDay* days, int count) {
     return;  // keep the last good forecast
   }
   fc_have = true;
-  for (int d = 0; d < 2; ++d) {
-    if (d >= count) {
-      break;
-    }
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%d\xC2\xB0 / %d\xC2\xB0", round_c(days[d].t_max), round_c(days[d].t_min));
+  for (int d = 0; d < 2 && d < count; ++d) {
+    char buf[48];
+    snprintf(buf, sizeof(buf), "%d\xC2\xB0 #8A94A8 / %d\xC2\xB0#", round_c(days[d].t_max), round_c(days[d].t_min));
     lv_label_set_text(fc_temp[d], buf);
-    lv_obj_align(fc_temp[d], LV_ALIGN_TOP_MID, 0, 88);
     snprintf(buf, sizeof(buf), "%.1f mm", static_cast<double>(days[d].precip));
     lv_label_set_text(fc_rain[d], buf);
-    lv_obj_align(fc_rain[d], LV_ALIGN_TOP_MID, 0, 122);
     day_icon(fc_icon[d], days[d].kind);
   }
 }
 
 void ui_set_weather(bool ok, int temp_c, int code) {
-  if (weather_temp == nullptr || weather_cond == nullptr) {
+  if (weather_temp == nullptr) {
     return;
   }
   if (!ok) {
     lv_label_set_text(weather_temp, "--");
-    lv_label_set_text(weather_cond, "Wetter nicht verfügbar");
+    snprintf(cur_cond, sizeof(cur_cond), "Wetter nicht verf\xC3\xBCgbar");
   } else {
-    char buf[8];
-    snprintf(buf, sizeof(buf), "%d", temp_c);
+    char buf[12];
+    snprintf(buf, sizeof(buf), "%d\xC2\xB0", temp_c);
     lv_label_set_text(weather_temp, buf);
-    lv_label_set_text(weather_cond, weather_name(code));
+    weather_icon(weather_big, code);
+    snprintf(cur_cond, sizeof(cur_cond), "%s", weather_name(code));
   }
-  if (weather_deg != nullptr) {
-    lv_obj_align_to(weather_deg, weather_temp, LV_ALIGN_OUT_RIGHT_TOP, 4, 2);
-  }
+  update_weather_line();
+}
+
+void ui_time_done(bool ok) {
+  time_saving = false;
+  console_printf("Time settings saved=%d\n", ok ? 1 : 0);
+  refresh_time_settings();
 }
 
 bool ui_take_command(LoxoneCommandRequest* out) {
@@ -2555,7 +2867,7 @@ void ui_geocode_done(bool ok, const GeoPlace* places, int n) {
 
 void ui_set_place(const char* name) {
   snprintf(cur_place, sizeof(cur_place), "%s", name != nullptr ? name : "");
-  if (weather_place != nullptr) lv_label_set_text(weather_place, cur_place);
+  update_weather_line();
 }
 
 void ui_location_done(bool ok, const char* name) {

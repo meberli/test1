@@ -3,6 +3,7 @@
 #include <stddef.h>
 
 #include "loxone_types.h"
+#include "lvgl.h"
 #include "settings.h"
 
 struct LoxoneCommandRequest {
@@ -85,6 +86,7 @@ void ui_geocode_done(bool ok, const GeoPlace* places, int n);
 void ui_location_done(bool ok, const char* name);
 void ui_set_place(const char* name);
 void ui_set_wifi_name(const char* ssid);
+void ui_time_done(bool ok);  // SetTime saved (NVS) and SNTP restarted
 
 // Test harness helpers.
 bool ui_find(const char* name, int* x, int* y);  // visible named widget centre
@@ -96,5 +98,6 @@ void ui_reset_location();                        // back to Buchs SG (NVS erase)
 // Screen timeout. Called for every touch sample before LVGL; false = swallow
 // (the touch that wakes the screen, until its release).
 bool ui_power_touch(bool pressed);
-void ui_power_describe(char* out, size_t n);       // "scr=on|off bl=N to=S"
+void ui_power_describe(char* out, size_t n);       // "scr=on|off bl=N to=S saver=K"
 void ui_set_screen_timeout(uint16_t seconds);      // runtime only (harness)
+lv_obj_t* ui_overlay();                            // screensaver screen while off (SHOT)

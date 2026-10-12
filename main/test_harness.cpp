@@ -93,7 +93,7 @@ void send_range(uint32_t off, uint32_t n) {
 }
 
 void shot(bool test_pattern) {
-  lv_obj_t* scr = lv_scr_act();
+  lv_obj_t* scr = ui_overlay() != nullptr ? ui_overlay() : lv_scr_act();  // off: the black layer
   uint32_t size = lv_snapshot_buf_size_needed(scr, LV_IMG_CF_TRUE_COLOR);
   if (shot_buf == nullptr) {
     shot_buf = static_cast<uint8_t*>(heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
