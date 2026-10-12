@@ -18,6 +18,9 @@ struct LoxoneStateRequest {
 };
 
 void ui_init();
+// Every touch sample (real or simulated), before LVGL sees it. Decides tap vs
+// swipe for the whole touch and runs page/back/home swipes.
+void ui_touch_sample(bool pressed, int x, int y);
 void ui_show_message(const char* title, const char* body, bool retry);
 void ui_show_controls(const LoxoneControl* items, size_t count, size_t supported, const char* server_name);
 void ui_set_status(const char* text);

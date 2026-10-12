@@ -69,6 +69,7 @@ lv_obj_t* card_btn[4] = {};
 lv_obj_t* card_sub[4] = {};
 lv_obj_t* cat_title = nullptr;
 lv_obj_t* cat_page = nullptr;
+lv_obj_t* prev_hint = nullptr;
 lv_obj_t* cat_status = nullptr;
 lv_obj_t* msg_status = nullptr;
 lv_obj_t* tiles[kPerPage] = {};
@@ -107,7 +108,6 @@ bool command_pending = false;
 LoxoneCommandRequest pending = {};
 bool retry_pending = false;
 
-bool gesture_tracking = false;
 bool gesture_consumed = false;
 lv_coord_t gesture_x0 = 0;
 lv_coord_t gesture_y0 = 0;
@@ -582,6 +582,14 @@ void refresh_category() {
     section_page = 0;
   }
   page = section_origin[current_section] + section_page;
+  // Left-edge handle: a previous page exists (swipe right to reach it).
+  if (prev_hint != nullptr) {
+    if (section_page > 0) {
+      show(prev_hint);
+    } else {
+      hide(prev_hint);
+    }
+  }
   for (int slot = 0; slot < kPerPage; ++slot) {
     hide(tiles[slot]);
   }
@@ -673,54 +681,65 @@ void swipe_page(int dir) {
   publish_status();
 }
 
-void on_gesture(lv_event_t* event) {
-  lv_event_code_t code = lv_event_get_code(event);
-  lv_indev_t* indev = lv_indev_get_act();
-  if (indev == nullptr) {
-    return;
-  }
-  lv_point_t point;
-  lv_indev_get_point(indev, &point);
-  if (code == LV_EVENT_PRESSED) {
-    gesture_tracking = true;
-    gesture_consumed = false;
-    gesture_x0 = point.x;
-    gesture_y0 = point.y;
-    return;
-  }
-  if (code != LV_EVENT_RELEASED || !gesture_tracking) {
-    return;
-  }
-  gesture_tracking = false;
-  int dx = point.x - gesture_x0;
-  int dy = point.y - gesture_y0;
-  int adx = abs(dx);
-  int ady = abs(dy);
-  bool moved = adx >= kSwipe || ady >= kSwipe;
-  if (!moved) {
-    return;
-  }
-  gesture_consumed = true;
+// Tap vs swipe. Every touch is tracked from finger-down to finger-up in the
+// input read path (ui_touch_sample), not per widget: LVGL hands a press to
+// the next widget when the finger slides onto it, so per-widget PRESSED
+// restarted the swipe and the release then clicked that widget.
+// A touch is a tap only if it never moved more than kTapSlop px from where it
+// started and lasted at most kTapMaxMs. Anything else is a gesture and no
+// widget handler acts on it (gesture_consumed). Swipes need kSwipe px.
+constexpr int kTapSlop = 12;
+constexpr uint32_t kTapMaxMs = 1000;
+
+bool touch_down = false;
+uint32_t touch_t0 = 0;
+int touch_max_move = 0;
+lv_coord_t touch_x = 0;
+lv_coord_t touch_y = 0;
+
+void run_gesture(void* param) {
+  intptr_t g = reinterpret_cast<intptr_t>(param);
   if (message_open) {
     return;
   }
-  if (gesture_y0 >= kScreen - kEdge && dy <= -kSwipe && ady > adx) {
+  if (g == 1) {
     go_home();
-    return;
-  }
-  if (gesture_x0 >= kScreen - kEdge && dx <= -kSwipe && adx > ady) {
+  } else if (g == 2) {
     back_level();
-    return;
-  }
-  if (adx >= kSwipe && adx > ady + 8) {
-    swipe_page(dx < 0 ? 1 : -1);
+  } else if (g == 3) {
+    swipe_page(1);
+  } else if (g == 4) {
+    swipe_page(-1);
   }
 }
 
-void watch(lv_obj_t* obj) {
-  lv_obj_add_event_cb(obj, on_gesture, LV_EVENT_PRESSED, nullptr);
-  lv_obj_add_event_cb(obj, on_gesture, LV_EVENT_RELEASED, nullptr);
+void finish_touch() {
+  int dx = touch_x - gesture_x0;
+  int dy = touch_y - gesture_y0;
+  int adx = abs(dx);
+  int ady = abs(dy);
+  bool tap = touch_max_move <= kTapSlop && millis() - touch_t0 <= kTapMaxMs;
+  gesture_consumed = !tap;
+  intptr_t g = 0;
+  if (adx >= kSwipe || ady >= kSwipe) {
+    if (gesture_y0 >= kScreen - kEdge && dy <= -kSwipe && ady > adx) {
+      g = 1;
+    } else if (gesture_x0 >= kScreen - kEdge && dx <= -kSwipe && adx > ady) {
+      g = 2;
+    } else if (adx >= kSwipe && adx > ady + 8) {
+      g = dx < 0 ? 3 : 4;
+    }
+  }
+  Serial.printf("Touch %s dx=%d dy=%d move=%d %ums%s\n", tap ? "tap" : "gesture", dx, dy, touch_max_move,
+                static_cast<unsigned>(millis() - touch_t0),
+                g == 1 ? " home" : g == 2 ? " back" : g == 3 ? " next" : g == 4 ? " prev" : "");
+  if (g != 0) {
+    // Not from inside the input read; let LVGL finish this release first.
+    lv_async_call(run_gesture, reinterpret_cast<void*>(g));
+  }
 }
+
+void watch(lv_obj_t*) {}
 
 int control_for_slot(int slot) {
   if (page < 0 || page >= page_n) {
@@ -751,8 +770,10 @@ void on_tile(lv_event_t* event) {
   }
   int slot = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(event)));
   int index = control_for_slot(slot);
+  Serial.printf("Activate tile slot %d control %d\n", slot, index);
   if (index == kLocalRelay) {
     panel_relay_set(!panel_relay_is_on());
+    Serial.printf("Relay 1 %s\n", panel_relay_is_on() ? "on" : "off");
     refresh_category();
     return;
   }
@@ -785,6 +806,7 @@ void on_shutter(lv_event_t* event) {
   if (row_slot >= current.nrows || !current.rows[row_slot].shutter) {
     return;
   }
+  Serial.printf("Activate shutter row %d %s\n", row_slot, kShutterCommand[which]);
   queue_command(current.rows[row_slot].a, kShutterCommand[which]);
   lv_label_set_text(shutter_pos[row_slot], "Sende...");
 }
@@ -797,6 +819,7 @@ void on_category(lv_event_t* event) {
   if (which < kSecFav || which > kSecOther) {
     return;
   }
+  Serial.printf("Activate category %d\n", which);
   enter_section(static_cast<Section>(which));
 }
 
@@ -892,6 +915,35 @@ void refresh_visible() {
 }
 
 }  // namespace
+
+void ui_touch_sample(bool pressed, int x, int y) {
+  if (pressed) {
+    if (!touch_down) {
+      touch_down = true;
+      touch_t0 = millis();
+      touch_max_move = 0;
+      gesture_x0 = x;
+      gesture_y0 = y;
+      gesture_consumed = false;
+    }
+    int m = abs(x - gesture_x0);
+    int my = abs(y - gesture_y0);
+    if (my > m) {
+      m = my;
+    }
+    if (m > touch_max_move) {
+      touch_max_move = m;
+    }
+    if (touch_max_move > kTapSlop) {
+      gesture_consumed = true;  // moved: no widget may click from here on
+    }
+    touch_x = x;
+    touch_y = y;
+  } else if (touch_down) {
+    touch_down = false;
+    finish_touch();
+  }
+}
 
 void ui_init() {
   lv_obj_t* screen = lv_scr_act();
@@ -1060,6 +1112,19 @@ void ui_init() {
   lv_obj_set_style_border_width(back_hint, 0, 0);
   lv_obj_clear_flag(back_hint, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_clear_flag(back_hint, LV_OBJ_FLAG_SCROLLABLE);
+
+  // Mirror of back_hint on the left edge, shown by refresh_category() only
+  // when there is a previous page.
+  prev_hint = lv_obj_create(cat_root);
+  lv_obj_set_pos(prev_hint, 5, 190);
+  lv_obj_set_size(prev_hint, 5, 80);
+  lv_obj_set_style_radius(prev_hint, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(prev_hint, lv_color_hex(kText), 0);
+  lv_obj_set_style_bg_opa(prev_hint, LV_OPA_30, 0);
+  lv_obj_set_style_border_width(prev_hint, 0, 0);
+  lv_obj_clear_flag(prev_hint, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_clear_flag(prev_hint, LV_OBJ_FLAG_SCROLLABLE);
+  hide(prev_hint);
 
   lv_obj_t* home_hint = lv_obj_create(cat_root);
   lv_obj_set_pos(home_hint, 200, 468);

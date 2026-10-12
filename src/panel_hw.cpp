@@ -8,6 +8,7 @@
 #include <lvgl.h>
 
 #include "board_pins.h"
+#include "panel_ui.h"
 #include "test_harness.h"
 
 // Pins set to -1 (GT911 INT/RST on this board) reach the core as 255 via the
@@ -55,7 +56,7 @@ void panel_flush(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* color) {
   lv_disp_flush_ready(drv);
 }
 
-void panel_touch_read(lv_indev_drv_t*, lv_indev_data_t* data) {
+void panel_touch_read_raw(lv_indev_data_t* data) {
   if (harness_touch_override(data)) {
     return;
   }
@@ -85,6 +86,11 @@ void panel_touch_read(lv_indev_drv_t*, lv_indev_data_t* data) {
   } else {
     data->state = LV_INDEV_STATE_RELEASED;
   }
+}
+
+void panel_touch_read(lv_indev_drv_t*, lv_indev_data_t* data) {
+  panel_touch_read_raw(data);
+  ui_touch_sample(data->state == LV_INDEV_STATE_PRESSED, data->point.x, data->point.y);
 }
 
 bool probe_address(uint8_t address) {
@@ -164,6 +170,10 @@ bool panel_lvgl_start() {
   lv_indev_drv_init(&indev_drv);
   indev_drv.type = LV_INDEV_TYPE_POINTER;
   indev_drv.read_cb = panel_touch_read;
+  // Same tap slop as panel_ui.cpp so LVGL's own scroll/gesture detection
+  // agrees with ours. Nothing here is scrollable, so these are defensive.
+  indev_drv.scroll_limit = 12;
+  indev_drv.gesture_limit = 60;
   lv_indev_drv_register(&indev_drv);
   return true;
 }
