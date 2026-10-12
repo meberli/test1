@@ -173,7 +173,7 @@ bool panel_lvgl_start() {
   // Same tap slop as panel_ui.cpp so LVGL's own scroll/gesture detection
   // agrees with ours. Nothing here is scrollable, so these are defensive.
   indev_drv.scroll_limit = 12;
-  indev_drv.gesture_limit = 60;
+  indev_drv.gesture_limit = 40;
   lv_indev_drv_register(&indev_drv);
   return true;
 }

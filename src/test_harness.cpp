@@ -10,6 +10,8 @@
 #include <string.h>
 
 #include "board_pins.h"
+#include "panel_hw.h"
+#include "panel_ui.h"
 
 namespace {
 
@@ -121,6 +123,10 @@ void handle(char* cmd) {
   int a, b, c, d, e;
   if (strcmp(cmd, "PING") == 0) {
     Serial.println("PONG");
+  } else if (strcmp(cmd, "STATE") == 0) {
+    char text[64];
+    ui_describe(text, sizeof(text));
+    Serial.printf("STATE %s relay=%d busy=%d\n", text, panel_relay_is_on() ? 1 : 0, sim != Sim::Idle ? 1 : 0);
   } else if (sscanf(cmd, "BAUD %d", &a) == 1 && a >= 9600) {
     // Switch the link speed for this session (resets on reboot).
     Serial.println("OK");
@@ -138,6 +144,17 @@ void handle(char* cmd) {
   } else if (sscanf(cmd, "PRESS %d %d", &a, &b) == 2) {
     start_move(a, b, a, b, 1, false);
     Serial.println("OK");
+  } else if (sscanf(cmd, "MOVE %d %d", &a, &b) == 2) {
+    // Finger path step while held (after PRESS): lets the host replay real,
+    // jittery multi-point touches instead of a straight SWIPE.
+    if (sim == Sim::Hold || sim == Sim::Move) {
+      cur_x = clampc(a, kPanelWidth);
+      cur_y = clampc(b, kPanelHeight);
+      sim = Sim::Hold;
+      Serial.println("OK");
+    } else {
+      Serial.println("ERR not pressed");
+    }
   } else if (strcmp(cmd, "RELEASE") == 0) {
     sim = sim == Sim::Idle ? Sim::Idle : Sim::ReleaseHold;
     t0 = millis();

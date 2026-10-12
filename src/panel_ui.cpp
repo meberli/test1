@@ -16,7 +16,9 @@ namespace {
 
 constexpr int kScreen = 480;
 constexpr int kEdge = 32;
-constexpr int kSwipe = 60;
+// Touch is sampled every LV_INDEV_DEF_READ_PERIOD ms, so a quick 80 px flick
+// can register as ~40 px. Taps stay at <= kTapSlop (12 px).
+constexpr int kSwipe = 40;
 constexpr int kMargin = 20;
 constexpr int kGap = 12;
 constexpr int kTileW = 214;
@@ -70,6 +72,7 @@ lv_obj_t* card_sub[4] = {};
 lv_obj_t* cat_title = nullptr;
 lv_obj_t* cat_page = nullptr;
 lv_obj_t* prev_hint = nullptr;
+lv_obj_t* next_hint = nullptr;
 lv_obj_t* cat_status = nullptr;
 lv_obj_t* msg_status = nullptr;
 lv_obj_t* tiles[kPerPage] = {};
@@ -590,6 +593,14 @@ void refresh_category() {
       hide(prev_hint);
     }
   }
+  // Right-edge handle: a next page exists (swipe left to reach it).
+  if (next_hint != nullptr) {
+    if (section_page + 1 < count) {
+      show(next_hint);
+    } else {
+      hide(next_hint);
+    }
+  }
   for (int slot = 0; slot < kPerPage; ++slot) {
     hide(tiles[slot]);
   }
@@ -722,17 +733,21 @@ void finish_touch() {
   gesture_consumed = !tap;
   intptr_t g = 0;
   if (adx >= kSwipe || ady >= kSwipe) {
+    // Home is the only edge gesture: swipe up from the bottom edge. There is
+    // no right-edge "back" any more: a left swipe that starts near the right
+    // edge (where a thumb naturally starts) used to go home instead of
+    // paging. Horizontal swipes page from any start position.
     if (gesture_y0 >= kScreen - kEdge && dy <= -kSwipe && ady > adx) {
       g = 1;
-    } else if (gesture_x0 >= kScreen - kEdge && dx <= -kSwipe && adx > ady) {
-      g = 2;
     } else if (adx >= kSwipe && adx > ady + 8) {
       g = dx < 0 ? 3 : 4;
     }
   }
-  Serial.printf("Touch %s dx=%d dy=%d move=%d %ums%s\n", tap ? "tap" : "gesture", dx, dy, touch_max_move,
+  Serial.printf("Touch %s from %d,%d to %d,%d dx=%d dy=%d move=%d %ums%s\n", tap ? "tap" : "gesture",
+                static_cast<int>(gesture_x0), static_cast<int>(gesture_y0), static_cast<int>(touch_x),
+                static_cast<int>(touch_y), dx, dy, touch_max_move,
                 static_cast<unsigned>(millis() - touch_t0),
-                g == 1 ? " home" : g == 2 ? " back" : g == 3 ? " next" : g == 4 ? " prev" : "");
+                g == 1 ? " home" : g == 3 ? " next" : g == 4 ? " prev" : "");
   if (g != 0) {
     // Not from inside the input read; let LVGL finish this release first.
     lv_async_call(run_gesture, reinterpret_cast<void*>(g));
@@ -915,6 +930,17 @@ void refresh_visible() {
 }
 
 }  // namespace
+
+void ui_describe(char* out, size_t n) {
+  if (message_open) {
+    snprintf(out, n, "message");
+  } else if (nav == Nav::Home) {
+    snprintf(out, n, "home");
+  } else {
+    snprintf(out, n, "category %s %d/%d", section_name(current_section), section_page + 1,
+             section_pages[current_section]);
+  }
+}
 
 void ui_touch_sample(bool pressed, int x, int y) {
   if (pressed) {
@@ -1103,7 +1129,10 @@ void ui_init() {
   lv_obj_align(empty_hint, LV_ALIGN_CENTER, 0, 20);
   hide(empty_hint);
 
-  lv_obj_t* back_hint = lv_obj_create(cat_root);
+  // Right-edge handle: shown by refresh_category() only when a next page
+  // exists. (It used to mean "swipe back to home" and was always shown.)
+  next_hint = lv_obj_create(cat_root);
+  lv_obj_t* back_hint = next_hint;
   lv_obj_set_pos(back_hint, 470, 190);
   lv_obj_set_size(back_hint, 5, 80);
   lv_obj_set_style_radius(back_hint, LV_RADIUS_CIRCLE, 0);
@@ -1112,6 +1141,7 @@ void ui_init() {
   lv_obj_set_style_border_width(back_hint, 0, 0);
   lv_obj_clear_flag(back_hint, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_clear_flag(back_hint, LV_OBJ_FLAG_SCROLLABLE);
+  hide(back_hint);
 
   // Mirror of back_hint on the left edge, shown by refresh_category() only
   // when there is a previous page.
