@@ -21,6 +21,8 @@
 #include "panel_ui.h"
 #include "weather_derive.h"
 #include "webcams.h"
+#include "info.h"
+#include "maint.h"
 #include "board_pins.h"
 #include "test_harness.h"
 
@@ -247,7 +249,7 @@ const char* kNotConfiguredBody =
 // res_q. Big results (controls, week) live in static storage that only the
 // network task writes before posting and only the UI task reads afterwards.
 
-enum class NetOp : uint8_t { Connect, Load, Command, State, Weather, Settings, Camera };
+enum class NetOp : uint8_t { Connect, Load, Command, State, Weather, Settings, Camera, Transit, Calendar, Meteo, Ota };
 
 struct NetRequest {
   NetOp op;
@@ -255,6 +257,8 @@ struct NetRequest {
   LoxoneStateRequest state;
   SettingsRequest settings;
   CamRequest cam;
+  int station;      // Transit: board index
+  char url[256];    // Ota
 };
 
 struct NetResult {
@@ -292,6 +296,13 @@ bool windy_key(char* key, size_t n) {
   bool own = false;
   return settings_load_windy_key(key, n, &own);
 }
+
+// Results too big for the queue: written by the network task before it posts
+// the result, read by the UI task in handle_result (one request in flight).
+Board g_board;
+Calendar g_cal;
+MeteoNow g_meteo;
+Station g_hits[kMaxStationHits];
 
 QueueHandle_t net_q = nullptr;
 QueueHandle_t res_q = nullptr;
@@ -415,6 +426,26 @@ void net_settings(const SettingsRequest& s, NetResult* res) {
       res->ok = settings_save_windy_key(s.key);
       console_printf("Windy key %s (ok=%d)\n", s.key[0] != '\0' ? "saved" : "reset to default", res->ok ? 1 : 0);
       break;
+    case SettingsRequest::StationSearch:
+      res->count = transit_search(s.query, g_hits, kMaxStationHits);
+      res->ok = res->count >= 0;
+      if (res->count < 0) res->count = 0;
+      break;
+    case SettingsRequest::SetStation: {
+      Station st = {};
+      snprintf(st.id, sizeof(st.id), "%s", s.station_id);
+      snprintf(st.name, sizeof(st.name), "%s", s.station_name);
+      res->ok = settings_save_station(s.station_idx, st);
+      res->index = s.station_idx;
+      console_printf("Station %d = %s (%s) saved=%d\n", s.station_idx, st.name, st.id, res->ok ? 1 : 0);
+      break;
+    }
+    case SettingsRequest::SetText:
+      res->ok = settings_save_text(static_cast<TextSetting>(s.text_which), s.text);
+      res->index = s.text_which;
+      console_printf("Setting text %d %s (ok=%d)\n", s.text_which, s.text[0] != '\0' ? "saved" : "reset to default",
+                     res->ok ? 1 : 0);  // never log the value (private calendar URL)
+      break;
     case SettingsRequest::ResetLocation:
       settings_reset_location();
       g_loc = settings_default_location();
@@ -488,6 +519,36 @@ void net_task(void*) {
                        static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)));
         break;
       }
+      case NetOp::Transit: {
+        Station st[kStationN];
+        settings_load_stations(st);
+        int i = req.station >= 0 && req.station < kStationN ? req.station : 0;
+        res.index = i;
+        res.ok = transit_board(st[i], &g_board);
+        break;
+      }
+      case NetOp::Calendar: {
+        char* ical = static_cast<char*>(heap_caps_malloc(512, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (ical == nullptr) break;
+        char* waste = ical + 256;
+        settings_load_text(kUrlIcal, ical, 256, nullptr);
+        settings_load_text(kUrlWaste, waste, 256, nullptr);
+        res.ok = calendar_fetch(ical, waste, &g_cal);
+        memset(ical, 0, 512);
+        heap_caps_free(ical);
+        break;
+      }
+      case NetOp::Meteo: {
+        char plz[16];
+        settings_load_text(kTextPlz, plz, sizeof(plz), nullptr);
+        res.ok = meteo_fetch(plz, &g_meteo);
+        break;
+      }
+      case NetOp::Ota:
+        console_printf("OTA from %s\n", req.url);
+        res.ok = maint_ota_from_url(req.url, res.detail, sizeof(res.detail));
+        console_printf("OTA %s %s\n", res.ok ? "installed" : "failed", res.ok ? "" : res.detail);
+        break;
       case NetOp::Weather:
         res.ok = fetch_buchs_weather(&res.temp_c, &res.code, res.days, &res.week_count);
         console_printf("Weather %s\n", res.ok ? "ok" : "unavailable");
@@ -562,6 +623,15 @@ void handle_result(const NetResult& res) {
         case SettingsRequest::SetWindyKey:
           ui_windy_key_done(res.ok);
           break;
+        case SettingsRequest::StationSearch:
+          ui_station_search_done(res.ok, g_hits, res.count);
+          break;
+        case SettingsRequest::SetStation:
+          ui_station_saved(res.ok, res.index);
+          break;
+        case SettingsRequest::SetText:
+          ui_text_saved(res.ok, static_cast<uint8_t>(res.index));
+          break;
         default:
           ui_location_done(res.ok, res.location.name);
           next_weather_ms = now_ms();  // refresh the weather right away
@@ -570,6 +640,18 @@ void handle_result(const NetResult& res) {
       break;
     case NetOp::Camera:
       ui_cam_done(res.ok, res.status, res.cam, res.frame, res.detail);
+      break;
+    case NetOp::Transit:
+      ui_transit_done(res.index, res.ok, g_board);
+      break;
+    case NetOp::Calendar:
+      ui_calendar_done(res.ok, g_cal);
+      break;
+    case NetOp::Meteo:
+      ui_meteo_done(res.ok, g_meteo);
+      break;
+    case NetOp::Ota:
+      ui_ota_done(res.ok, res.detail);
       break;
     case NetOp::Weather:
       ui_set_weather(res.ok, res.temp_c, res.code);
@@ -599,6 +681,7 @@ void poll() {
         console_printf("Wi-Fi connected, Miniserver %s:%d auth %s\n", LOXONE_HOST, LOXONE_PORT, auth->name());
         phase = Phase::Loading;
         load_painted = false;
+        maint_mark_valid();  // UI runs and Wi-Fi works: keep this image after an OTA update
         ui_set_wifi_name(wifi_ssid());
         ui_set_status("Wi-Fi connected");
       } else if (wifi_failed() || now_ms() - wifi_started_ms > kWifiTimeoutMs) {
@@ -635,8 +718,20 @@ void poll() {
       } else if (ui_take_cam(&r.cam)) {
         r.op = NetOp::Camera;
         net_post(r);
+      } else if (ui_take_ota(r.url, sizeof(r.url))) {
+        r.op = NetOp::Ota;
+        net_post(r);
+      } else if (ui_take_transit(&r.station)) {
+        r.op = NetOp::Transit;
+        net_post(r);
       } else if (static_cast<int32_t>(now_ms() - next_weather_ms) >= 0) {
         r.op = NetOp::Weather;
+        net_post(r);
+      } else if (ui_take_meteo()) {
+        r.op = NetOp::Meteo;
+        net_post(r);
+      } else if (ui_take_calendar()) {
+        r.op = NetOp::Calendar;
         net_post(r);
       }
       break;

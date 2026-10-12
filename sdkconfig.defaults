@@ -77,6 +77,16 @@ CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 # which is no longer in the bundle; verify cross-signed chains against GTS R1.
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y
 CONFIG_ESP_HTTP_CLIENT_ENABLE_BASIC_AUTH=y
+# Maintenance web server (Einstellungen > Wartung): browsers send long headers.
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+CONFIG_HTTPD_MAX_URI_LEN=512
+
+# --- OTA (two app slots, see partitions.csv) ---
+# A new image must reach Wi-Fi once (maint_mark_valid), else the bootloader
+# rolls back to the previous slot on the next reset.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+# "Update-URL" may point to a PC on the LAN (http://...); GitHub uses HTTPS.
+CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y
 
 # --- LVGL 8.4 via Kconfig (replaces include/lv_conf.h) ---
 CONFIG_LV_CONF_SKIP=y
@@ -84,6 +94,9 @@ CONFIG_LV_COLOR_DEPTH_16=y
 CONFIG_LV_COLOR_16_SWAP=n
 # LVGL heap through malloc: with SPIRAM_USE_MALLOC, blocks >16 KB land in PSRAM.
 CONFIG_LV_MEM_CUSTOM=y
+# ... and from PSRAM for every block (objects, styles, label texts), see
+# main/lv_mem_psram.h. The path is relative to lvgl/src/misc/lv_mem.c.
+CONFIG_LV_MEM_CUSTOM_INCLUDE="../../../../main/lv_mem_psram.h"
 CONFIG_LV_INDEV_DEF_READ_PERIOD=15
 CONFIG_LV_FONT_MONTSERRAT_14=n
 CONFIG_LV_FONT_MONTSERRAT_16=y

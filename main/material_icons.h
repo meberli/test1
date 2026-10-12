@@ -10,9 +10,12 @@
 //                  lock, location_on, search, check, chevron_right, bedtime,
 //                  schedule, lightbulb, blinds_2, toggle_on, star,
 //                  keyboard_arrow_up, public, desktop_windows, videocam,
-//                  add, delete, key
+//                  add, delete, key, train, directions_bus, event, recycling,
+//                  warning, system_update, memory, calendar_month, backup,
+//                  router, info
 //   font_icons_38 also: videocam
-//   font_icons_16: water_drop, air, wb_twilight, nights_stay, bedtime
+//   font_icons_16: water_drop, air, wb_twilight, nights_stay, bedtime, warning,
+//                  schedule, train, directions_bus, event, recycling
 // Material Symbols: Copyright Google LLC, Apache License 2.0
 // (https://github.com/google/material-design-icons/blob/master/LICENSE).
 
@@ -54,6 +57,17 @@ LV_FONT_DECLARE(font_icons_16)
 #define ICON_ADD "\xEE\x85\x85"          // U+E145 (24)
 #define ICON_DELETE "\xEE\xA1\xB2"       // U+E872 (24)
 #define ICON_KEY "\xEE\x9C\xBC"          // U+E73C (24)
+#define ICON_TRAIN "\xEE\x95\xB0" // U+E570 (24, 16)
+#define ICON_BUS "\xEE\xBF\xB6"   // U+EFF6 (24, 16)
+#define ICON_EVENT "\xEE\xA1\xB8" // U+E878 (24, 16)
+#define ICON_RECYCLE "\xEE\x9D\xA0" // U+E760 (24, 16)
+#define ICON_WARNING "\xEF\x82\x83" // U+F083 (24, 16)
+#define ICON_UPDATE "\xEF\x8B\x8D" // U+F2CD (24)
+#define ICON_MEMORY "\xEE\x8C\xA2" // U+E322 (24)
+#define ICON_CALENDAR "\xEE\xAF\x8C" // U+EBCC (24)
+#define ICON_BACKUP "\xEE\xA1\xA4" // U+E864 (24)
+#define ICON_ROUTER "\xEE\x8C\xA8" // U+E328 (24)
+#define ICON_INFO "\xEE\xA2\x8E"  // U+E88E (24)
 // Weather
 #define ICON_W_SUN "\xEE\xA0\x9A"         // U+E81A sunny
 #define ICON_W_PARTLY "\xEF\x85\xB2"      // U+F172 partly_cloudy_day

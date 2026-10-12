@@ -4,6 +4,9 @@
 #include <string.h>
 
 #include "config_load.h"
+#include "info.h"
+#include <ArduinoJson.h>
+#include "esp_heap_caps.h"
 #include "nvs.h"
 #include "sdkconfig.h"
 
@@ -228,4 +231,177 @@ void settings_mask_key(const char* key, char* out, size_t n) {
   } else {
     snprintf(out, n, "%.4s****%s", key, key + len - 4);
   }
+}
+
+void settings_load_stations(Station* out) {
+  static const Station kDefault[kStationN] = {{"8509404", "Buchs SG"}, {"8587407", "R\xC3\xA4" "fis, Schulhaus"}};
+  nvs_handle_t h;
+  bool open = nvs_open(kNs, NVS_READONLY, &h) == ESP_OK;
+  for (int i = 0; i < kStationN; ++i) {
+    out[i] = kDefault[i];
+    if (!open) continue;
+    char kid[8], kname[10];
+    snprintf(kid, sizeof(kid), "st%d_id", i);
+    snprintf(kname, sizeof(kname), "st%d_name", i);
+    Station s = {};
+    if (get_str(h, kid, s.id, sizeof(s.id)) && s.id[0] != '\0' && get_str(h, kname, s.name, sizeof(s.name))) out[i] = s;
+  }
+  if (open) nvs_close(h);
+}
+
+bool settings_save_station(int i, const Station& st) {
+  if (i < 0 || i >= kStationN) return false;
+  nvs_handle_t h;
+  if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return false;
+  char kid[8], kname[10];
+  snprintf(kid, sizeof(kid), "st%d_id", i);
+  snprintf(kname, sizeof(kname), "st%d_name", i);
+  bool ok = nvs_set_str(h, kid, st.id) == ESP_OK && nvs_set_str(h, kname, st.name) == ESP_OK && nvs_commit(h) == ESP_OK;
+  nvs_close(h);
+  return ok;
+}
+
+namespace {
+const char* const kTextKey[kTextSettingN] = {"ical_url", "waste_url", "ota_url", "meteo_plz"};
+// Keys that never leave the panel unless the user asks for secrets.
+const char* const kSecretKeys[] = {"wifi_pass", "windy_key", "ical_url"};
+
+bool is_secret(const char* key) {
+  for (const char* k : kSecretKeys) {
+    if (strcmp(k, key) == 0) return true;
+  }
+  return false;
+}
+}  // namespace
+
+const char* settings_text_default(TextSetting which) {
+  switch (which) {
+    case kUrlIcal: return CONFIG_PANEL_ICAL_URL;
+    case kUrlWaste: return CONFIG_PANEL_WASTE_URL;
+    case kUrlOta: return CONFIG_PANEL_OTA_URL;
+    case kTextPlz: return CONFIG_PANEL_METEO_PLZ;
+    default: return "";
+  }
+}
+
+bool settings_load_text(TextSetting which, char* out, size_t n, bool* own) {
+  if (own != nullptr) *own = false;
+  out[0] = '\0';
+  if (which >= kTextSettingN) return false;
+  nvs_handle_t h;
+  if (nvs_open(kNs, NVS_READONLY, &h) == ESP_OK) {
+    bool ok = get_str(h, kTextKey[which], out, n) && out[0] != '\0';
+    nvs_close(h);
+    if (ok) {
+      if (own != nullptr) *own = true;
+      return true;
+    }
+  }
+  snprintf(out, n, "%s", settings_text_default(which));
+  return out[0] != '\0';
+}
+
+bool settings_save_text(TextSetting which, const char* value) {
+  if (which >= kTextSettingN) return false;
+  nvs_handle_t h;
+  if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return false;
+  bool ok = true;
+  if (value == nullptr || value[0] == '\0') nvs_erase_key(h, kTextKey[which]);
+  else ok = nvs_set_str(h, kTextKey[which], value) == ESP_OK;
+  ok = ok && nvs_commit(h) == ESP_OK;
+  nvs_close(h);
+  return ok;
+}
+
+// {"format":"esp_display-settings","version":1,"secrets":false,
+//  "keys":{"loc_name":{"t":"str","v":"Buchs SG"},"scr_to":{"t":"u16","v":120},
+//          "loc_lat":{"t":"blob","v":"<hex>"}}}
+size_t settings_export_json(char* out, size_t n, bool secrets) {
+  DynamicJsonDocument doc(16384);
+  doc["format"] = "esp_display-settings";
+  doc["version"] = 1;
+  doc["secrets"] = secrets;
+  JsonObject keys = doc.createNestedObject("keys");
+  nvs_handle_t h;
+  if (nvs_open(kNs, NVS_READONLY, &h) != ESP_OK) {
+    return serializeJson(doc, out, n);
+  }
+  nvs_iterator_t it = nullptr;
+  esp_err_t res = nvs_entry_find(NVS_DEFAULT_PART_NAME, kNs, NVS_TYPE_ANY, &it);
+  while (res == ESP_OK) {
+    nvs_entry_info_t info;
+    nvs_entry_info(it, &info);
+    res = nvs_entry_next(&it);
+    if (!secrets && is_secret(info.key)) continue;
+    JsonObject k = keys.createNestedObject(info.key);
+    switch (info.type) {
+      case NVS_TYPE_U8: { uint8_t v; nvs_get_u8(h, info.key, &v); k["t"] = "u8"; k["v"] = v; break; }
+      case NVS_TYPE_U16: { uint16_t v; nvs_get_u16(h, info.key, &v); k["t"] = "u16"; k["v"] = v; break; }
+      case NVS_TYPE_U32: { uint32_t v; nvs_get_u32(h, info.key, &v); k["t"] = "u32"; k["v"] = v; break; }
+      case NVS_TYPE_I32: { int32_t v; nvs_get_i32(h, info.key, &v); k["t"] = "i32"; k["v"] = v; break; }
+      case NVS_TYPE_STR: {
+        char v[300];
+        size_t len = sizeof(v);
+        if (nvs_get_str(h, info.key, v, &len) != ESP_OK) v[0] = '\0';
+        k["t"] = "str";
+        k["v"] = v;  // copied by ArduinoJson
+        break;
+      }
+      case NVS_TYPE_BLOB: {
+        uint8_t v[128];
+        size_t len = sizeof(v);
+        if (nvs_get_blob(h, info.key, v, &len) != ESP_OK) len = 0;
+        char hex[sizeof(v) * 2 + 1];
+        for (size_t i = 0; i < len; ++i) snprintf(hex + i * 2, 3, "%02x", v[i]);
+        hex[len * 2] = '\0';
+        k["t"] = "blob";
+        k["v"] = hex;
+        break;
+      }
+      default:
+        keys.remove(info.key);
+        break;
+    }
+  }
+  nvs_release_iterator(it);
+  nvs_close(h);
+  if (measureJson(doc) + 1 > n) return 0;
+  return serializeJson(doc, out, n);
+}
+
+int settings_import_json(const char* json, size_t len) {
+  DynamicJsonDocument doc(16384);
+  if (deserializeJson(doc, json, len)) return -1;
+  if (strcmp(doc["format"] | "", "esp_display-settings") != 0) return -1;
+  nvs_handle_t h;
+  if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return -1;
+  int n = 0;
+  for (JsonPair kv : doc["keys"].as<JsonObject>()) {
+    const char* key = kv.key().c_str();
+    if (strlen(key) > 15) continue;
+    const char* t = kv.value()["t"] | "";
+    JsonVariant v = kv.value()["v"];
+    esp_err_t e = ESP_FAIL;
+    if (strcmp(t, "u8") == 0) e = nvs_set_u8(h, key, v.as<uint8_t>());
+    else if (strcmp(t, "u16") == 0) e = nvs_set_u16(h, key, v.as<uint16_t>());
+    else if (strcmp(t, "u32") == 0) e = nvs_set_u32(h, key, v.as<uint32_t>());
+    else if (strcmp(t, "i32") == 0) e = nvs_set_i32(h, key, v.as<int32_t>());
+    else if (strcmp(t, "str") == 0) e = nvs_set_str(h, key, v | "");
+    else if (strcmp(t, "blob") == 0) {
+      const char* hex = v | "";
+      uint8_t b[128];
+      size_t bl = strlen(hex) / 2;
+      if (bl > sizeof(b)) continue;
+      for (size_t i = 0; i < bl; ++i) {
+        unsigned x = 0;
+        sscanf(hex + i * 2, "%2x", &x);
+        b[i] = static_cast<uint8_t>(x);
+      }
+      e = nvs_set_blob(h, key, b, bl);
+    }
+    if (e == ESP_OK) n++;
+  }
+  nvs_commit(h);
+  nvs_close(h);
+  return n;
 }

@@ -25,4 +25,33 @@ config PANEL_WINDY_API_KEY
         sdkconfig.defaults.local (merged by CMakeLists.txt).
         Get a free key at https://api.windy.com/keys (Webcams API).
 
+config PANEL_ICAL_URL
+    string "Family calendar iCal URL (build default, private)"
+    default ""
+    help
+        Secret address of the calendar (Google: "Secret address in iCal
+        format"). Never commit it: put CONFIG_PANEL_ICAL_URL="..." into the
+        gitignored sdkconfig.defaults.local. Can be changed in
+        Einstellungen > Kalender.
+
+config PANEL_WASTE_URL
+    string "Waste collection calendar (web page or .ics)"
+    default "https://buchs-sg.ch/abfallkalender/"
+    help
+        The Buchs SG Abfallkalender page (its add-to-calendar entries are
+        read) or any iCalendar (.ics) address.
+
+config PANEL_OTA_URL
+    string "Firmware update URL (build default)"
+    default "https://github.com/meberli/esp_display/releases/latest/download/loxone_panel.bin"
+    help
+        Image for Einstellungen > Wartung > Update aus dem Internet
+        (HTTPS with the certificate bundle, or HTTP on the LAN).
+
+config PANEL_METEO_PLZ
+    string "MeteoSchweiz location (PLZ + 2 digits)"
+    default "947000"
+    help
+        Postcode for warnings and the precipitation nowcast: 947000 = 9470 Buchs SG.
+
 endmenu

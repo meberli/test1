@@ -20,6 +20,7 @@
 #include "weather_derive.h"
 #include <esp_heap_caps.h>
 #include <esp_random.h>
+#include <esp_system.h>
 
 namespace {
 
@@ -62,7 +63,8 @@ constexpr uint32_t kRed = 0xFF7A7A;
 enum Section : uint8_t { kSecFav = 0, kSecLight = 1, kSecShutter = 2, kSecOther = 3 };
 enum class Nav : uint8_t {
   Home, Category, Weather, Settings, WifiList, WifiPass, Location, Display, Time,
-  Cameras, CamSettings, CamId, CamSearch, CamKey
+  Cameras, CamSettings, CamId, CamSearch, CamKey,
+  Transit, Calendar, Rain, TransitSet, StationSearch, CalSet, TextEdit, Maint
 };
 
 const char* kShutterLabel[2] = {"Auf", "Ab"};
@@ -218,6 +220,30 @@ void camset_value();
 bool cam_kb_ready(lv_obj_t* ta);
 bool cam_describe(char* out, size_t n);
 bool cam_list_dump();
+// panel_ui_info.inc (ÖV, Kalender, MeteoSchweiz, Wartung)
+lv_obj_t* set_tr_val = nullptr;
+lv_obj_t* set_cal_val = nullptr;
+lv_obj_t* set_maint_val = nullptr;
+void info_hide_all();
+void info_hide_views();
+void home_chips_refresh();
+void home_warn_refresh();
+void tr_swipe(int dir);
+void rain_enter();
+void open_trset();
+void open_calset();
+void open_maint();
+void txt_go_back();
+void trset_refresh();
+void calset_refresh();
+void maint_refresh();
+bool st_kb_ready(lv_obj_t* ta);
+bool txt_kb_ready(lv_obj_t* ta);
+bool info_describe(char* out, size_t n);
+bool info_list_dump();
+void info_tick();
+void build_home_info(lv_obj_t* weather_card);
+void build_info_screens(lv_obj_t* screen);
 
 // Named widgets for the test harness (POS <name> -> centre coordinates).
 struct Named {
@@ -902,6 +928,7 @@ void hide_settings() {
   hide(disp_root);
   hide(time_root);
   cam_hide_all();
+  info_hide_all();
   if (kb != nullptr) {
     lv_keyboard_set_textarea(kb, nullptr);
     hide(kb);
@@ -919,8 +946,11 @@ void show_home() {
   hide(cam_root);
   hide(message);
   hide_settings();
+  info_hide_views();
   show(home_root);
   fill_home_cards();
+  home_chips_refresh();
+  home_warn_refresh();
   message_open = false;
 }
 
@@ -935,6 +965,7 @@ void enter_section(Section section) {
   hide(message);
   hide(home_root);
   hide(wx_root);
+  info_hide_views();
   show(cat_root);
   refresh_category();
   arm_visible_reads();
@@ -955,10 +986,31 @@ void back_level() {
 }
 
 void refresh_weather_day();
+void open_weather_day(int day);
 
 void swipe_page(int dir) {
   if (nav == Nav::Cameras) {
     cam_swipe(dir);
+    return;
+  }
+  if (nav == Nav::Transit) {
+    tr_swipe(dir);
+    return;
+  }
+  if (nav == Nav::Rain) {
+    if (dir > 0) open_weather_day(0);
+    return;
+  }
+  if (nav == Nav::TransitSet || nav == Nav::CalSet || nav == Nav::Maint) {
+    if (dir < 0) settings_back();
+    return;
+  }
+  if (nav == Nav::StationSearch) {
+    if (dir < 0) open_trset();
+    return;
+  }
+  if (nav == Nav::TextEdit) {
+    if (dir < 0) txt_go_back();
     return;
   }
   if (nav == Nav::CamId || nav == Nav::CamSearch || nav == Nav::CamKey) {
@@ -975,6 +1027,10 @@ void swipe_page(int dir) {
     return;
   }
   if (nav == Nav::Weather) {
+    if (wx_day == 0 && dir < 0) {  // before "Heute": warnings and the rain nowcast
+      rain_enter();
+      return;
+    }
     int next = wx_day + dir;
     if (next >= 0 && next < wx_count) {
       wx_day = next;
@@ -1043,7 +1099,7 @@ void finish_touch() {
     // paging. Horizontal swipes page from any start position.
     if (gesture_y0 >= kScreen - kEdge && dy <= -kSwipe && ady > adx) {
       g = 1;
-    } else if ((nav == Nav::Weather || nav == Nav::Cameras) && dy <= -kSwipe && ady > adx + 8) {
+    } else if ((nav == Nav::Weather || nav == Nav::Cameras || nav == Nav::Transit) && dy <= -kSwipe && ady > adx + 8) {
       g = 1;  // the day view has no vertical use, so any upward swipe goes home
     } else if (adx >= kSwipe && adx > ady + 8) {
       g = dx < 0 ? 3 : 4;
@@ -1193,6 +1249,7 @@ void open_weather_day(int day) {
   wx_day = day < 0 ? 0 : day;
   hide(home_root);
   hide(cat_root);
+  info_hide_views();
   show(wx_root);
   refresh_weather_day();
 }
@@ -1968,6 +2025,7 @@ void clock_tick(lv_timer_t*) {
   }
   if (nav == Nav::Time && !scr_off) refresh_time_settings();
   cam_tick();
+  info_tick();
 }
 
 void open_settings() {
@@ -1978,6 +2036,10 @@ void open_settings() {
   hide(cat_root);
   hide(wx_root);
   hide_settings();
+  info_hide_views();
+  trset_refresh();
+  calset_refresh();
+  maint_refresh();
   lv_label_set_text(set_wifi_val, cur_ssid[0] != '\0' ? cur_ssid : "nicht verbunden");
   lv_label_set_text(set_loc_val, cur_place);
   refresh_display_settings();
@@ -2127,6 +2189,8 @@ void on_kb_event(lv_event_t* e) {
     if (ta == loc_ta) on_loc_ready(e);
     if (ta == time_ta) on_time_ready(e);
     cam_kb_ready(ta);
+    st_kb_ready(ta);
+    txt_kb_ready(ta);
   } else if (code == LV_EVENT_CANCEL) {
     lv_keyboard_set_textarea(kb, nullptr);
     hide(kb);
@@ -2147,6 +2211,9 @@ void on_settings_row(lv_event_t* e) {
   if (which == 2) open_display();
   if (which == 3) open_time();
   if (which == 4) open_camset();
+  if (which == 5) open_trset();
+  if (which == 6) open_calset();
+  if (which == 7) open_maint();
 }
 
 void on_msg_wifi(lv_event_t*) {
@@ -2198,14 +2265,19 @@ lv_obj_t* make_caption(lv_obj_t* parent, int y, const char* text) {
 
 void build_settings_screens(lv_obj_t* screen) {
   set_root = make_screen_root(screen, "Einstellungen");
-  const char* names[5] = {"WLAN", "Wetter-Ort", "Bildschirm", "Uhrzeit", "Kameras"};
-  const char* icons[5] = {ICON_WIFI3, ICON_PLACE, ICON_SCREEN, ICON_SCHEDULE, ICON_VIDEOCAM};
-  const uint32_t colors[5] = {kAccent, kAmber, kPurple, kGreen, kTeal};
-  lv_obj_t** vals[5] = {&set_wifi_val, &set_loc_val, &set_disp_val, &set_time_val, &set_cam_val};
-  const char* keys[5] = {"set:wifi", "set:loc", "set:disp", "set:time", "set:cams"};
-  for (int i = 0; i < 5; ++i) {
-    lv_obj_t* row = make_row(set_root, 72, icons[i], colors[i], on_settings_row, i);
-    lv_obj_set_pos(row, kMargin, 60 + i * 80);
+  // Scrollable list: eight rows do not fit on one screen.
+  lv_obj_t* set_list = make_list(set_root, 56, 404);
+  constexpr int kRows = 8;
+  const char* names[kRows] = {"WLAN", "Wetter-Ort", "Bildschirm", "Uhrzeit", "Kameras", "\xC3\x96V", "Kalender",
+                              "Wartung"};
+  const char* icons[kRows] = {ICON_WIFI3, ICON_PLACE, ICON_SCREEN, ICON_SCHEDULE, ICON_VIDEOCAM, ICON_TRAIN,
+                              ICON_EVENT, ICON_MEMORY};
+  const uint32_t colors[kRows] = {kAccent, kAmber, kPurple, kGreen, kTeal, kAccent, kPurple, kOrange};
+  lv_obj_t** vals[kRows] = {&set_wifi_val, &set_loc_val, &set_disp_val, &set_time_val,
+                            &set_cam_val,  &set_tr_val,  &set_cal_val,  &set_maint_val};
+  const char* keys[kRows] = {"set:wifi", "set:loc", "set:disp", "set:time", "set:cams", "set:oev", "set:cal", "set:maint"};
+  for (int i = 0; i < kRows; ++i) {
+    lv_obj_t* row = make_row(set_list, 72, icons[i], colors[i], on_settings_row, i);
     reg(keys[i], row);
     lv_obj_t* name = make_label(row, &font_inter_sb16, lv_color_hex(kText));
     lv_label_set_text(name, names[i]);
@@ -2218,6 +2290,9 @@ void build_settings_screens(lv_obj_t* screen) {
     lv_label_set_text(chev, ICON_CHEVRON);
     lv_obj_align(chev, LV_ALIGN_RIGHT_MID, -14, 0);
   }
+  lv_obj_t* pad = lv_obj_create(set_list);  // room above the home bar at the end of the list
+  lv_obj_set_size(pad, 10, 8);
+  style_plain(pad);
 
   // Bildschirm: timeout, screensaver and the black-mode hint.
   disp_root = make_screen_root(screen, "Bildschirm");
@@ -2909,6 +2984,8 @@ void build_camera_screens(lv_obj_t* screen) {
   lv_label_set_long_mode(camkey_status, LV_LABEL_LONG_WRAP);
 }
 
+#include "panel_ui_info.inc"
+
 }  // namespace
 
 void ui_set_week(const WeatherDetailDay* days, int count) {
@@ -2927,6 +3004,7 @@ void ui_set_week(const WeatherDetailDay* days, int count) {
 
 void ui_describe(char* out, size_t n) {
   if (!message_open && cam_describe(out, n)) return;
+  if (!message_open && info_describe(out, n)) return;
   if (message_open) {
     snprintf(out, n, "message");
   } else if (nav == Nav::Home) {
@@ -3096,6 +3174,7 @@ void ui_init() {
     lv_label_set_text(icon, b.icon);
     lv_obj_center(icon);
   }
+  build_home_info(weather);  // warning pill in the card, ÖV + Kalender chips below the buttons
 
   cat_root = lv_obj_create(screen);
   lv_obj_set_pos(cat_root, 0, 0);
@@ -3250,6 +3329,7 @@ void ui_init() {
   hide(home_root);
   build_settings_screens(screen);
   build_camera_screens(screen);
+  build_info_screens(screen);
   lv_obj_move_foreground(kb);
   build_sleep_layer();
   lv_timer_create(clock_tick, 1000, nullptr);
@@ -3530,6 +3610,8 @@ void ui_set_wifi_name(const char* ssid) { snprintf(cur_ssid, sizeof(cur_ssid), "
 bool ui_find(const char* name, int* x, int* y) {
   for (int i = 0; i < named_n; ++i) {
     if (strcmp(named[i].name, name) == 0 && named[i].obj != nullptr && obj_visible(named[i].obj)) {
+      lv_obj_scroll_to_view_recursive(named[i].obj, LV_ANIM_OFF);  // rows in scrolled lists
+      lv_obj_update_layout(named[i].obj);
       lv_area_t a;
       lv_obj_get_coords(named[i].obj, &a);
       *x = (a.x1 + a.x2) / 2;
@@ -3542,6 +3624,7 @@ bool ui_find(const char* name, int* x, int* y) {
 
 void ui_list_dump() {
   if (cam_list_dump()) return;
+  if (info_list_dump()) return;
   if (nav == Nav::WifiList) {
     for (int i = 0; i < ui_ap_n; ++i) console_printf("ITEM %d %d %s\n", i, ui_aps[i].rssi, ui_aps[i].ssid);
   } else if (nav == Nav::Location) {
@@ -3684,4 +3767,120 @@ void ui_windy_key_done(bool ok) {
   cam_busy = true;
   lv_label_set_text(camkey_status, "Gespeichert, pr\xC3\xBC" "fe Key ...");
   queue_settings(r);
+}
+
+// --- ÖV / Kalender / MeteoSchweiz / Wartung ---------------------------------
+
+bool ui_take_transit(int* idx) {
+  if (tr_inflight || scr_off) return false;
+  uint32_t now = now_ms();
+  int want = -1;
+  if (nav == Nav::Transit && static_cast<int32_t>(now - tr_next_ms[tr_idx]) >= 0) want = tr_idx;
+  else if (nav == Nav::Home && static_cast<int32_t>(now - tr_next_ms[0]) >= 0) want = 0;
+  if (want < 0) return false;
+  *idx = want;
+  tr_inflight = true;
+  return true;
+}
+
+void ui_transit_done(int idx, bool ok, const Board& b) {
+  tr_inflight = false;
+  if (idx < 0 || idx >= kStationN) return;
+  if (ok) boards[idx] = b;
+  else boards[idx].ok = false;
+  uint32_t wait = !ok ? kTransitRetryMs : (nav == Nav::Transit && tr_idx == idx) ? kTransitViewMs : kTransitHomeMs;
+  tr_next_ms[idx] = now_ms() + wait;
+  if (nav == Nav::Transit) tr_refresh_view();
+  if (idx == 0) home_chips_refresh();
+}
+
+void ui_station_search_done(bool ok, const Station* st, int n) {
+  st_busy = false;
+  st_hit_n = n < 0 ? 0 : (n > kMaxStationHits ? kMaxStationHits : n);
+  memcpy(st_hits, st, sizeof(Station) * st_hit_n);
+  if (nav != Nav::StationSearch) return;
+  lv_label_set_text(st_status, !ok ? "Suche fehlgeschlagen" : st_hit_n == 0 ? "Keine Haltestelle gefunden" : "Haltestelle antippen");
+  fill_st_list();
+}
+
+void ui_station_saved(bool ok, int idx) {
+  st_busy = false;
+  if (ok) {
+    settings_load_stations(stations);
+    boards[idx] = Board();
+    tr_next_ms[idx] = now_ms();
+  }
+  if (nav == Nav::StationSearch) {
+    if (ok) open_trset();
+    else lv_label_set_text(st_status, "Speichern fehlgeschlagen");
+  }
+}
+
+void ui_text_saved(bool ok, uint8_t which) {
+  txt_busy = false;
+  if (ok && (which == kUrlIcal || which == kUrlWaste)) cal_next_ms = now_ms();  // reload the calendar
+  if (ok && which == kTextPlz) meteo_next_ms = now_ms();
+  if (nav == Nav::TextEdit) {
+    if (ok) txt_go_back();
+    else lv_label_set_text(txt_status, "Speichern fehlgeschlagen");
+  }
+}
+
+bool ui_take_calendar() {
+  if (cal_inflight || cal == nullptr || !clock_synced()) return false;
+  if (static_cast<int32_t>(now_ms() - cal_next_ms) < 0) return false;
+  cal_inflight = true;
+  return true;
+}
+
+void ui_calendar_done(bool ok, const Calendar& c) {
+  cal_inflight = false;
+  cal_next_ms = now_ms() + (ok ? kCalendarMs : kInfoRetryMs);
+  if (ok || !cal_have) {
+    memcpy(cal, &c, sizeof(Calendar));
+    cal_have = true;
+  }
+  if (nav == Nav::Calendar) calv_refresh();
+  if (nav == Nav::Home) home_chips_refresh();
+}
+
+bool ui_take_meteo() {
+  if (meteo_inflight || !clock_synced()) return false;
+  if (static_cast<int32_t>(now_ms() - meteo_next_ms) < 0) return false;
+  meteo_inflight = true;
+  return true;
+}
+
+void ui_meteo_done(bool ok, const MeteoNow& m) {
+  meteo_inflight = false;
+  meteo_next_ms = now_ms() + (ok ? kMeteoMs : kInfoRetryMs);
+  if (ok) {
+    meteo = m;
+    meteo_have = true;
+  }
+  home_warn_refresh();
+  if (nav == Nav::Rain) rain_refresh();
+}
+
+bool ui_take_ota(char* url, size_t n) {
+  if (!ota_request) return false;
+  ota_request = false;
+  if (!settings_load_text(kUrlOta, url, n, nullptr)) {
+    snprintf(ota_msg, sizeof(ota_msg), "Keine Update-URL");
+    return false;
+  }
+  ota_running = true;
+  return true;
+}
+
+void restart_now(lv_timer_t*) { esp_restart(); }
+
+void ui_ota_done(bool ok, const char* err) {
+  ota_running = false;
+  snprintf(ota_msg, sizeof(ota_msg), "%s", ok ? "Installiert. Neustart ..." : err);
+  if (nav == Nav::Maint) maint_refresh();
+  if (ok) {
+    lv_timer_t* t = lv_timer_create(restart_now, 1500, nullptr);
+    lv_timer_set_repeat_count(t, 1);
+  }
 }

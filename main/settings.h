@@ -87,6 +87,32 @@ bool settings_save_windy_key(const char* key);  // "" erases the own key
 // "abcd••••wxyz" for display (never the whole key).
 void settings_mask_key(const char* key, char* out, size_t n);
 
+// --- ÖV stations (two departure boards) ---
+// NVS "st<i>_id"/"st<i>_name", else Buchs SG (8509404) and Räfis, Schulhaus (8587407).
+struct Station;
+void settings_load_stations(Station* out);  // kStationN entries
+bool settings_save_station(int i, const Station& st);
+
+// --- Text settings with a build default (URLs) ---
+// kUrlIcal: family calendar (private: NVS "ical_url", else CONFIG_PANEL_ICAL_URL
+//           from the gitignored sdkconfig.defaults.local)
+// kUrlWaste: waste calendar (Buchs SG Abfallkalender page or any .ics)
+// kUrlOta: firmware image for "Update aus dem Internet"
+// kTextPlz: MeteoSchweiz location (PLZ + 2 digits, "947000" = 9470 Buchs SG)
+enum TextSetting : uint8_t { kUrlIcal = 0, kUrlWaste = 1, kUrlOta = 2, kTextPlz = 3, kTextSettingN = 4 };
+// own = true when the value came from NVS. Returns false if empty.
+bool settings_load_text(TextSetting which, char* out, size_t n, bool* own);
+bool settings_save_text(TextSetting which, const char* value);  // "" = back to the build default
+const char* settings_text_default(TextSetting which);
+
+// --- Backup / restore of the whole "panel" NVS namespace as JSON ---
+// Secret keys (Wi-Fi password, Windy key, iCal URL) only with secrets = true.
+// Returns the JSON length written to out (truncated output returns 0).
+size_t settings_export_json(char* out, size_t n, bool secrets);
+// Writes every key of a settings_export_json() document. Returns the number
+// of keys written, -1 on a parse error.
+int settings_import_json(const char* json, size_t len);
+
 // Requests from the settings screens to the network task.
 struct SettingsRequest {
   enum Kind : uint8_t {
@@ -95,6 +121,9 @@ struct SettingsRequest {
     CamNearby,    // query: place name -> geocode -> webcams nearby
     SetCams,      // cams/cam_n -> NVS
     SetWindyKey,  // key ("" = back to the build default) -> NVS
+    StationSearch,  // query -> stations (transport.opendata.ch)
+    SetStation,     // station_idx + station -> NVS
+    SetText,        // text_which + text ("" = default) -> NVS
   } kind;
   WifiCreds creds;
   char query[48];
@@ -104,4 +133,9 @@ struct SettingsRequest {
   int cam_n;
   Webcam cams[kMaxCams];
   char key[72];
+  int station_idx;
+  char station_id[12];
+  char station_name[48];
+  uint8_t text_which;
+  char text[256];
 };

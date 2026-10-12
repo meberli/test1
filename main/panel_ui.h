@@ -6,6 +6,8 @@
 #include "lvgl.h"
 #include "settings.h"
 #include "webcams.h"
+#include "info.h"
+#include "maint.h"
 
 struct LoxoneCommandRequest {
   char action[40];
@@ -116,3 +118,18 @@ void ui_cam_lookup_done(bool ok, int status, const CamInfo& info);
 void ui_cam_nearby_done(bool ok, int status, const CamInfo* found, int n, const char* place);
 void ui_cams_saved(bool ok);
 void ui_windy_key_done(bool ok);
+
+// --- ÖV, Kalender, MeteoSchweiz, Wartung (panel_ui_info.inc) ---
+// The UI decides when to refresh (visible screen, intervals); the network
+// task fetches and answers with the *_done calls.
+bool ui_take_transit(int* station);  // board index to refresh now
+void ui_transit_done(int station, bool ok, const Board& board);
+void ui_station_search_done(bool ok, const Station* stations, int n);
+void ui_station_saved(bool ok, int station);
+void ui_text_saved(bool ok, uint8_t which);  // TextSetting
+bool ui_take_calendar();
+void ui_calendar_done(bool ok, const Calendar& cal);
+bool ui_take_meteo();
+void ui_meteo_done(bool ok, const MeteoNow& m);
+bool ui_take_ota(char* url, size_t n);  // "Update" tapped: URL to install
+void ui_ota_done(bool ok, const char* err);
