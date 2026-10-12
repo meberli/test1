@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "sdkconfig.h"
+
 struct WifiCreds {
   char ssid[33];
   char pass[65];
@@ -128,6 +130,9 @@ void settings_reminder_clear_acks();  // test harness
 // NVS lacks them, so an OTA update to a public, secret-free build keeps working.
 // Call once at boot before anything loads settings.
 void settings_seed_from_build();
+#ifdef CONFIG_PANEL_TEST_HARNESS
+bool settings_test_wifi(int op, const char* arg);  // 0 forget, 1 set password, 2 restore build creds
+#endif
 
 // Loxone Miniserver: NVS ("lox_host", "lox_port", "lox_user", "lox_pass", "lox_auth"),
 // else panel_config.h.

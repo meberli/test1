@@ -3,29 +3,52 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <atomic>
+
 #include "esp_crt_bundle.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_event.h"
 #include "esp_http_client.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
 
 namespace {
-volatile bool g_connected = false;
-volatile bool g_failed = false;
+std::atomic<bool> g_connected{false};
+std::atomic<bool> g_failed{false};
+std::atomic<bool> g_scanning{false};    // no reconnects while a scan runs
+std::atomic<int> g_last_reason{0};      // last WIFI_REASON_* of a disconnect
+std::atomic<int> g_auth_fails{0};       // auth / handshake rejections since wifi_start
+std::atomic<int> g_noap_fails{0};       // "AP not found" since wifi_start
 esp_netif_t* g_netif = nullptr;
 char g_ssid[33] = "";
 
+bool is_auth_reason(int r) {
+  return r == WIFI_REASON_AUTH_FAIL || r == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT || r == WIFI_REASON_HANDSHAKE_TIMEOUT ||
+         r == WIFI_REASON_MIC_FAILURE || r == WIFI_REASON_AUTH_EXPIRE || r == WIFI_REASON_ASSOC_FAIL ||
+         r == WIFI_REASON_CONNECTION_FAIL;
+}
+
 void on_event(void*, esp_event_base_t base, int32_t id, void* data) {
   if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-    esp_wifi_connect();
+    if (g_ssid[0] != '\0') esp_wifi_connect();  // empty SSID: station only for scanning
   } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
     g_connected = false;
     auto* ev = static_cast<wifi_event_sta_disconnected_t*>(data);
-    if (ev != nullptr && (ev->reason == WIFI_REASON_NO_AP_FOUND || ev->reason == WIFI_REASON_AUTH_FAIL ||
-                          ev->reason == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT)) {
+    int reason = ev != nullptr ? ev->reason : 0;
+    g_last_reason = reason;
+    if (reason == WIFI_REASON_NO_AP_FOUND || reason == WIFI_REASON_NO_AP_FOUND_IN_RSSI_THRESHOLD ||
+        reason == WIFI_REASON_NO_AP_FOUND_IN_AUTHMODE_THRESHOLD || reason == WIFI_REASON_NO_AP_FOUND_W_COMPATIBLE_SECURITY) {
+      g_noap_fails = g_noap_fails + 1;
+      g_failed = true;
+    } else if (is_auth_reason(reason)) {
+      g_auth_fails = g_auth_fails + 1;
       g_failed = true;
     }
-    esp_wifi_connect();  // keep trying; the UI decides when to give up
+    printf("Wi-Fi disconnect reason %d (auth %d, no AP %d)\n", reason, g_auth_fails.load(), g_noap_fails.load());
+    // Keep trying (also the saved network after a failed boot); the caller
+    // decides when to give up or switch. A scan pauses the retries.
+    if (!g_scanning && g_ssid[0] != '\0') esp_wifi_connect();
   } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
     g_connected = true;
     g_failed = false;
@@ -45,10 +68,15 @@ void wifi_start(const char* ssid, const char* password, const char* hostname) {
     if (hostname != nullptr) esp_netif_set_hostname(g_netif, hostname);
     inited = true;
   } else {
+    g_scanning = true;  // the stop below raises a disconnect: do not reconnect to the old AP
     esp_wifi_stop();
+    g_scanning = false;
   }
   g_connected = false;
   g_failed = false;
+  g_auth_fails = 0;
+  g_noap_fails = 0;
+  g_last_reason = 0;
   snprintf(g_ssid, sizeof(g_ssid), "%s", ssid);
   wifi_config_t wc = {};
   snprintf(reinterpret_cast<char*>(wc.sta.ssid), sizeof(wc.sta.ssid), "%s", ssid);
@@ -62,6 +90,9 @@ void wifi_start(const char* ssid, const char* password, const char* hostname) {
 
 bool wifi_connected() { return g_connected; }
 bool wifi_failed() { return g_failed; }
+int wifi_auth_fails() { return g_auth_fails; }
+int wifi_noap_fails() { return g_noap_fails; }
+int wifi_last_reason() { return g_last_reason; }
 
 HttpGetResult http_get(const char* url, const char* user, const char* password, uint8_t* body, size_t cap,
                        int timeout_ms, const char* hdr_name, const char* hdr_value) {
@@ -140,14 +171,32 @@ const char* wifi_ssid() { return g_ssid; }
 int wifi_scan(WifiAp* out, int cap) {
   wifi_scan_config_t sc = {};
   sc.show_hidden = false;
-  if (esp_wifi_scan_start(&sc, true) != ESP_OK) {
-    return 0;
+  // A scan fails while the station is (re)connecting, e.g. to an absent saved
+  // network after a failed boot: pause the retries for the scan.
+  bool paused = !g_connected;
+  if (paused) {
+    g_scanning = true;
+    esp_wifi_disconnect();
+    vTaskDelay(pdMS_TO_TICKS(200));
   }
-  uint16_t num = 32;
+  // Retry: right after the pause the driver may still be mid-connect (the scan
+  // is refused or comes back empty).
+  esp_err_t err = ESP_FAIL;
+  uint16_t num = 0;
   static wifi_ap_record_t recs[32];
-  if (esp_wifi_scan_get_ap_records(&num, recs) != ESP_OK) {
-    return 0;
+  for (int i = 0; i < 5; ++i) {
+    err = esp_wifi_scan_start(&sc, true);
+    num = 32;
+    if (err == ESP_OK) err = esp_wifi_scan_get_ap_records(&num, recs);
+    if (err == ESP_OK && num > 0) break;
+    printf("Wi-Fi scan attempt %d: %s, %u networks\n", i + 1, esp_err_to_name(err), static_cast<unsigned>(num));
+    vTaskDelay(pdMS_TO_TICKS(700));
   }
+  if (paused) {
+    g_scanning = false;
+    if (g_ssid[0] != '\0') esp_wifi_connect();
+  }
+  if (err != ESP_OK) return 0;
   int n = 0;
   for (int i = 0; i < num && n < cap; ++i) {  // records come sorted by RSSI
     const char* ssid = reinterpret_cast<const char*>(recs[i].ssid);

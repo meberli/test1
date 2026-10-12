@@ -10,6 +10,9 @@ void wifi_start(const char* ssid, const char* password, const char* hostname);
 bool wifi_connected();
 // true once the driver reported a final failure (wrong password, no AP).
 bool wifi_failed();
+int wifi_auth_fails();   // auth / 4-way handshake rejections since wifi_start
+int wifi_noap_fails();   // "no AP found" since wifi_start
+int wifi_last_reason();  // last WIFI_REASON_* of a disconnect
 // Blocking scan (call from the network task). Returns the number of APs,
 // strongest first, duplicates merged.
 int wifi_scan(WifiAp* out, int cap);

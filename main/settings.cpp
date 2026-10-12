@@ -33,8 +33,13 @@ bool settings_load_wifi(WifiCreds* out) {
   if (nvs_open(kNs, NVS_READONLY, &h) == ESP_OK) {
     bool ok = get_str(h, "wifi_ssid", out->ssid, sizeof(out->ssid)) && out->ssid[0] != '\0';
     if (ok) get_str(h, "wifi_pass", out->pass, sizeof(out->pass));
+    uint8_t seeded = 0;
+    nvs_get_u8(h, "wifi_seeded", &seeded);
     nvs_close(h);
     if (ok) return true;
+    // Once NVS owns the Wi-Fi settings (seeded or set by the user), an empty
+    // SSID means "not configured": the build default never comes back.
+    if (seeded) return false;
   }
   snprintf(out->ssid, sizeof(out->ssid), "%s", WIFI_SSID);
   snprintf(out->pass, sizeof(out->pass), "%s", WIFI_PASSWORD);
@@ -45,7 +50,7 @@ bool settings_save_wifi(const WifiCreds& c) {
   nvs_handle_t h;
   if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return false;
   bool ok = nvs_set_str(h, "wifi_ssid", c.ssid) == ESP_OK && nvs_set_str(h, "wifi_pass", c.pass) == ESP_OK &&
-            nvs_commit(h) == ESP_OK;
+            nvs_set_u8(h, "wifi_seeded", 1) == ESP_OK && nvs_commit(h) == ESP_OK;
   nvs_close(h);
   return ok;
 }
@@ -512,10 +517,20 @@ void settings_seed_from_build() {
   if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return;
   int n = 0;
   // Wi-Fi and Loxone: only when NVS has no value yet (the user may have changed them).
+  // The build Wi-Fi is copied once ("wifi_seeded"); afterwards a network the
+  // user picked (or cleared) is never overridden by the firmware default.
   char ssid[33];
-  if (!get_str(h, "wifi_ssid", ssid, sizeof(ssid)) || ssid[0] == '\0') {
-    seed(h, "wifi_ssid", WIFI_SSID, true, &n);
-    seed(h, "wifi_pass", WIFI_PASSWORD, true, &n);
+  uint8_t seeded = 0;
+  nvs_get_u8(h, "wifi_seeded", &seeded);
+  if (!seeded) {
+    if (!get_str(h, "wifi_ssid", ssid, sizeof(ssid)) || ssid[0] == '\0') {
+      seed(h, "wifi_ssid", WIFI_SSID, true, &n);
+      seed(h, "wifi_pass", WIFI_PASSWORD, true, &n);
+    }
+    if (get_str(h, "wifi_ssid", ssid, sizeof(ssid)) && ssid[0] != '\0') {
+      nvs_set_u8(h, "wifi_seeded", 1);
+      ++n;
+    }
   }
   char host[64];
   if (!get_str(h, "lox_host", host, sizeof(host)) || host[0] == '\0') {
@@ -535,6 +550,29 @@ void settings_seed_from_build() {
   nvs_close(h);
   printf("Settings: %d build values copied to NVS\n", n);
 }
+
+#ifdef CONFIG_PANEL_TEST_HARNESS
+// Test only: forget the Wi-Fi (as after a user reset), set a password, or
+// restore the build credentials. Values are never logged.
+bool settings_test_wifi(int op, const char* arg) {
+  nvs_handle_t h;
+  if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return false;
+  bool ok = true;
+  if (op == 0) {
+    nvs_erase_key(h, "wifi_ssid");
+    nvs_erase_key(h, "wifi_pass");
+    nvs_set_u8(h, "wifi_seeded", 1);
+  } else if (op == 1) {
+    ok = nvs_set_str(h, "wifi_pass", arg) == ESP_OK;
+  } else {
+    ok = nvs_set_str(h, "wifi_ssid", WIFI_SSID) == ESP_OK && nvs_set_str(h, "wifi_pass", WIFI_PASSWORD) == ESP_OK;
+    nvs_set_u8(h, "wifi_seeded", 1);
+  }
+  ok = ok && nvs_commit(h) == ESP_OK;
+  nvs_close(h);
+  return ok;
+}
+#endif
 
 LoxoneConfig settings_load_loxone() {
   LoxoneConfig c = {};

@@ -180,6 +180,7 @@ constexpr uint8_t kHintBacklight = 4;  // percent
 lv_obj_t* wl_root = nullptr;
 lv_obj_t* wl_list = nullptr;
 lv_obj_t* wl_status = nullptr;
+char wifi_setup_note[96] = "";  // set while the firmware opened the WLAN selection
 lv_obj_t* wp_root = nullptr;
 lv_obj_t* wp_title = nullptr;
 lv_obj_t* wp_ta = nullptr;
@@ -2370,6 +2371,8 @@ void build_settings_screens(lv_obj_t* screen) {
   wl_root = make_screen_root(screen, "WLAN");
   wl_status = make_label(wl_root, &font_inter_14, lv_color_hex(kTextDim));
   lv_obj_set_pos(wl_status, 24, 48);
+  lv_obj_set_width(wl_status, 432);
+  lv_label_set_long_mode(wl_status, LV_LABEL_LONG_DOT);
   wl_list = make_list(wl_root, 76, 380);
 
   wp_root = make_screen_root(screen, "WLAN");
@@ -3589,23 +3592,70 @@ void ui_wifi_scan_done(const WifiAp* aps, int n) {
   memcpy(ui_aps, aps, sizeof(WifiAp) * ui_ap_n);
   wl_scanning = false;
   if (nav != Nav::WifiList) return;
-  char t[48];
-  snprintf(t, sizeof(t), ui_ap_n > 0 ? "%d Netzwerke" : "Keine Netzwerke gefunden", ui_ap_n);
+  char t[96];
+  if (wifi_setup_note[0] != '\0') {
+    snprintf(t, sizeof(t), "%s", wifi_setup_note);  // why the firmware opened this screen
+  } else {
+    snprintf(t, sizeof(t), ui_ap_n > 0 ? "%d Netzwerke" : "Keine Netzwerke gefunden", ui_ap_n);
+  }
   lv_label_set_text(wl_status, t);
   fill_wifi_list();
 }
 
-void ui_wifi_connect_done(bool ok, const char* ssid, const char* current) {
+// status: 0 ok, 1 password/auth rejected, 2 network not found, 3 timeout.
+void ui_wifi_connect_done(bool ok, const char* ssid, const char* current, int status, const char* old_ssid,
+                          bool reverted) {
   wp_connecting = false;
   snprintf(cur_ssid, sizeof(cur_ssid), "%s", current != nullptr ? current : "");
+  if (ok) wifi_setup_note[0] = '\0';
   if (nav != Nav::WifiPass) return;
   if (ok) {
     open_settings();
-  } else {
-    char t[120];
-    snprintf(t, sizeof(t), "Verbindung zu %s fehlgeschlagen. Wieder mit %s verbunden.", ssid, cur_ssid);
-    lv_label_set_text(wp_status, t);
+    return;
   }
+  const char* why = status == 1 ? "Passwort falsch?" : status == 2 ? "Netz nicht gefunden." : "Zeitüberschreitung.";
+  char t[200];
+  if (old_ssid != nullptr && old_ssid[0] != '\0') {
+    snprintf(t, sizeof(t), "Verbindung zu %s fehlgeschlagen - %s Zurück zu %s%s", ssid, why, old_ssid,
+             reverted ? "." : " (verbinde weiter ...).");
+  } else {
+    snprintf(t, sizeof(t), "Verbindung zu %s fehlgeschlagen - %s", ssid, why);
+  }
+  lv_label_set_text(wp_status, t);
+  console_printf("UI: %s\n", t);
+}
+
+bool ui_wifi_busy() { return wp_connecting || (settings_pending && settings_req.kind == SettingsRequest::Connect); }
+
+// Boot without Wi-Fi or saved network unreachable: open the WLAN selection.
+// why: 0 none saved, 1 rejected (password?), 2 not found, 3 timeout.
+void ui_wifi_setup_open(const char* saved, int why) {
+  if (saved == nullptr || saved[0] == '\0') {
+    snprintf(wifi_setup_note, sizeof(wifi_setup_note), "Kein WLAN eingerichtet - Netz wählen");
+  } else {
+    snprintf(wifi_setup_note, sizeof(wifi_setup_note), "%s %s - versuche weiter", saved,
+             why == 1 ? "abgelehnt" : "nicht erreichbar");
+  }
+  console_printf("UI: WLAN selection (%s)\n", wifi_setup_note);
+  if (scr_off) screen_on();
+  last_activity = now_ms();
+  message_open = false;
+  hide(message);
+  hide(msg_status);
+  hide(home_root);
+  hide(cat_root);
+  hide(wx_root);
+  open_settings();
+  open_wifi_list();
+}
+
+void ui_wifi_setup_close() {
+  wifi_setup_note[0] = '\0';
+  if (nav == Nav::WifiList || nav == Nav::WifiPass || nav == Nav::Settings) {
+    hide_settings();
+    nav = Nav::Home;
+  }
+  ui_show_message("Connecting", "Joining Wi-Fi.", false);
 }
 
 void ui_geocode_done(bool ok, const GeoPlace* places, int n) {

@@ -29,7 +29,7 @@ Echte Screenshots vom Panel (über den Test-Harness aufgenommen). Netzwerk- und 
 - **OTA** – Update vom GitHub-Release (oder eigener URL) direkt am Panel, zwei OTA-Slots, Einstellungen bleiben erhalten.
 - **Backup** – Web-Wartung im Browser: Einstellungen als JSON sichern (wahlweise ohne Geheimnisse), wiederherstellen, Firmware hochladen.
 - **Status** – WLAN-Signal, IP, Laufzeit, RAM/PSRAM, Firmware-Version und Slot, NTP-Status.
-- **WLAN-Setup am Gerät** – Netzsuche mit Signalbalken und Passworteingabe über die Bildschirmtastatur.
+- **WLAN-Setup am Gerät** – Netzsuche mit Signalbalken und Passworteingabe über die Bildschirmtastatur. Ein neues Netz wird erst nach erfolgreicher Verbindung (IP erhalten) gespeichert; schlägt es fehl (z. B. Passwort falsch, Netz nicht gefunden), kehrt das Panel nach höchstens 20 s automatisch zum bisherigen Netz zurück. Ist beim Start kein WLAN eingerichtet oder das gespeicherte Netz 30 s lang nicht erreichbar, öffnet sich die WLAN-Auswahl; das gespeicherte Netz wird im Hintergrund weiter versucht, bleibt gespeichert, und die Auswahl schliesst sich, sobald es wieder da ist.
 
 ## Hardware
 
@@ -220,6 +220,7 @@ idf.py -B build-test -DSDKCONFIG="build-test/sdkconfig" -p COM14 flash
 | `settings_test.py`, `screen_test.py` | Einstellungen, Timeout, Aufwecken, Persistenz |
 | `cam_test.py` | Webcams |
 | `rem_test.py` | Erinnerungen inkl. Weck-Regression |
+| `wifi_test.py` | WLAN: falsches Passwort → Rückfall, Start ohne/mit falschem WLAN → Auswahl, Auto-Schliessen |
 | `info_test.py`, `ota_test.py`, `ota_url_test.py` | Status, OTA |
 | `v4_test.py` | Dark-Glass-Screens |
 | `diag_log.py` | Live-Diagnose auch mit normaler Firmware: Touch-Rohdaten, Loop-Zeiten, Speicher; `--noreset`, `--tap`, `--raw` |

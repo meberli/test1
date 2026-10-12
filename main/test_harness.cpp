@@ -2,6 +2,9 @@
 #ifdef CONFIG_PANEL_TEST_HARNESS
 
 #include "test_harness.h"
+#include "settings.h"
+#include "net.h"
+#include <string.h>
 
 #include "sys.h"
 #include <esp_heap_caps.h>
@@ -193,6 +196,18 @@ void handle(char* cmd) {
   } else if (strcmp(cmd, "REMCLEAR") == 0) {
     ui_rem_clear();
     console_puts("OK");
+  } else if (strcmp(cmd, "WIFIFORGET") == 0) {
+    console_puts(settings_test_wifi(0, "") ? "OK" : "ERR nvs");
+  } else if (strncmp(cmd, "WIFIPASS ", 9) == 0) {
+    console_puts(settings_test_wifi(1, cmd + 9) ? "OK" : "ERR nvs");
+  } else if (strcmp(cmd, "WIFIRELOAD") == 0) {
+    // As if the saved network came back: restart the station with the NVS creds.
+    WifiCreds c;
+    if (settings_load_wifi(&c)) wifi_start(c.ssid, c.pass, "loxone-panel");
+    memset(&c, 0, sizeof(c));
+    console_puts("OK");
+  } else if (strcmp(cmd, "WIFIRESTORE") == 0) {
+    console_puts(settings_test_wifi(2, "") ? "OK" : "ERR nvs");
   } else if (strcmp(cmd, "LOCRESET") == 0) {
     ui_reset_location();
     console_puts("OK");

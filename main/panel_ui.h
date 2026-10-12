@@ -84,7 +84,11 @@ void ui_set_week(const WeatherDetailDay* days, int count);
 bool ui_take_settings(SettingsRequest* out);
 void ui_wifi_scan_done(const WifiAp* aps, int n);
 // current = SSID the panel uses now (the new one, or the old one after a failure).
-void ui_wifi_connect_done(bool ok, const char* ssid, const char* current);
+void ui_wifi_connect_done(bool ok, const char* ssid, const char* current, int status, const char* old_ssid,
+                          bool reverted);
+bool ui_wifi_busy();                                // a connect is queued or running
+void ui_wifi_setup_open(const char* saved, int why);  // boot: WLAN selection instead of a dead end
+void ui_wifi_setup_close();                         // the saved network is back
 void ui_geocode_done(bool ok, const GeoPlace* places, int n);
 void ui_location_done(bool ok, const char* name);
 void ui_set_place(const char* name);

@@ -38,7 +38,11 @@ enum class Phase { NotConfigured, Wifi, Loading, Ready, Failed };
 Phase phase = Phase::NotConfigured;
 bool load_painted = false;
 uint32_t wifi_started_ms = 0;
-constexpr uint32_t kWifiTimeoutMs = 25000;
+constexpr uint32_t kWifiTimeoutMs = 30000;  // boot: then open the WLAN selection
+constexpr uint32_t kWifiSwitchMs = 20000;   // settings: then revert to the previous network
+constexpr int kWifiAuthFails = 3;
+constexpr int kWifiNoApFails = 3;
+bool wifi_setup_auto = false;  // WLAN selection opened by the firmware (boot failure / no Wi-Fi)
 constexpr size_t kStructureCap = 768 * 1024;
 
 LoxoneTokenAuthorizer token_auth;
@@ -354,21 +358,37 @@ void net_settings(const SettingsRequest& s, NetResult* res) {
       bool have_old = settings_load_wifi(&old);
       console_printf("Wi-Fi switching to \"%s\"\n", s.creds.ssid);
       wifi_start(s.creds.ssid, s.creds.pass, "loxone-panel");
+      // Give up after 20 s, or earlier on repeated hard failures. A single
+      // rejection is not enough: some WPA3 routers refuse the first SAE attempt.
       uint32_t t0 = now_ms();
-      while (!wifi_connected() && !(wifi_failed() && now_ms() - t0 > 3000) && now_ms() - t0 < 15000) {
+      for (;;) {
+        uint32_t el = now_ms() - t0;
+        if (wifi_connected() || el > kWifiSwitchMs) break;
+        if (el > 8000 && wifi_auth_fails() >= kWifiAuthFails) break;
+        if (el > 10000 && wifi_noap_fails() >= kWifiNoApFails) break;
         vTaskDelay(pdMS_TO_TICKS(100));
       }
       res->ok = wifi_connected();
       snprintf(res->detail, sizeof(res->detail), "%s", s.creds.ssid);
+      // status: 0 ok, 1 password/auth, 2 network not found, 3 timeout
+      res->status = res->ok ? 0 : wifi_auth_fails() > 0 ? 1 : wifi_noap_fails() > 0 ? 2 : 3;
       if (res->ok) {
-        settings_save_wifi(s.creds);
+        settings_save_wifi(s.creds);  // only a network that really got an IP is stored
         console_printf("Wi-Fi \"%s\" connected and saved\n", s.creds.ssid);
       } else if (have_old) {
-        console_printf("Wi-Fi \"%s\" failed, back to \"%s\"\n", s.creds.ssid, old.ssid);
+        console_printf("Wi-Fi \"%s\" failed (status %d, reason %d), back to \"%s\"\n", s.creds.ssid, res->status,
+                       wifi_last_reason(), old.ssid);
+        snprintf(res->title, sizeof(res->title), "%s", old.ssid);
         wifi_start(old.ssid, old.pass, "loxone-panel");
         t0 = now_ms();
-        while (!wifi_connected() && now_ms() - t0 < 15000) vTaskDelay(pdMS_TO_TICKS(100));
+        while (!wifi_connected() && now_ms() - t0 < kWifiTimeoutMs) vTaskDelay(pdMS_TO_TICKS(100));
+        res->index = wifi_connected() ? 1 : 0;  // reverted and connected again
+        console_printf("Wi-Fi back on \"%s\": %s\n", old.ssid, wifi_connected() ? "connected" : "still trying");
+      } else {
+        console_printf("Wi-Fi \"%s\" failed (status %d, reason %d), no previous network\n", s.creds.ssid,
+                       res->status, wifi_last_reason());
       }
+      memset(&old, 0, sizeof(old));
       break;
     }
     case SettingsRequest::Geocode:
@@ -599,7 +619,7 @@ void handle_result(const NetResult& res) {
           ui_wifi_scan_done(g_aps, res.count);
           break;
         case SettingsRequest::Connect:
-          ui_wifi_connect_done(res.ok, res.detail, wifi_ssid());
+          ui_wifi_connect_done(res.ok, res.detail, wifi_ssid(), res.status, res.title, res.index == 1);
           if (res.ok && phase == Phase::Failed) {  // changed from the Wi-Fi failed screen
             phase = Phase::Wifi;
             wifi_started_ms = now_ms();
@@ -685,9 +705,16 @@ void poll() {
         maint_mark_valid();  // UI runs and Wi-Fi works: keep this image after an OTA update
         ui_set_wifi_name(wifi_ssid());
         ui_set_status("Wi-Fi connected");
-      } else if (wifi_failed() || now_ms() - wifi_started_ms > kWifiTimeoutMs) {
+      } else if (now_ms() - wifi_started_ms > kWifiTimeoutMs) {
+        // Not on the first rejection (WPA3 routers often refuse the first SAE
+        // attempt): only after the timeout. The saved network stays in NVS and
+        // keeps being retried in the background.
         phase = Phase::Failed;
-        ui_show_message("Wi-Fi failed", "The panel could not join the network in panel_config.h.", true);
+        wifi_setup_auto = true;
+        console_printf("Wi-Fi \"%s\" not reachable after %u s (auth %d, no AP %d, reason %d): WLAN selection\n",
+                       wifi_ssid(), static_cast<unsigned>(kWifiTimeoutMs / 1000), wifi_auth_fails(), wifi_noap_fails(),
+                       wifi_last_reason());
+        ui_wifi_setup_open(wifi_ssid(), wifi_auth_fails() > 0 ? 1 : wifi_noap_fails() > 0 ? 2 : 3);
       }
       break;
     case Phase::Loading: {
@@ -744,6 +771,15 @@ void poll() {
         net_post(r);
         break;
       }
+      if (wifi_setup_auto && wifi_connected() && !ui_wifi_busy()) {
+        // The saved network came back while the WLAN selection was open.
+        console_printf("Wi-Fi \"%s\" is back: closing the WLAN selection\n", wifi_ssid());
+        wifi_setup_auto = false;
+        ui_wifi_setup_close();
+        phase = Phase::Wifi;
+        wifi_started_ms = now_ms();
+        break;
+      }
       if (ui_take_retry()) {
         start_wifi();
         phase = Phase::Wifi;
@@ -784,7 +820,8 @@ void ui_task(void*) {
   const LoxoneConfig& lox = settings_loxone();
   static LoxoneBasicAuthorizer basic_auth(lox.user, lox.pass);
   WifiCreds wc;
-  bool configured = settings_load_wifi(&wc) && lox.host[0] != '\0' && lox.user[0] != '\0';
+  bool have_wifi = settings_load_wifi(&wc);
+  bool configured = lox.host[0] != '\0' && lox.user[0] != '\0';
   memset(&wc, 0, sizeof(wc));
   if (strcmp(lox.auth, "basic") == 0) {
     auth = &basic_auth;
@@ -798,6 +835,13 @@ void ui_task(void*) {
                                       : "panel_config.h not found; not configured");
     ui_show_message("Not configured", kNotConfiguredBody, false);
     ui_set_status("Relay off");
+  } else if (!have_wifi) {
+    // Miniserver known, but no Wi-Fi saved: straight to the WLAN selection.
+    phase = Phase::Failed;
+    wifi_setup_auto = true;
+    console_puts("No Wi-Fi configured: WLAN selection");
+    wifi_start("", "", "loxone-panel");  // station up for scanning, no network
+    ui_wifi_setup_open("", 0);
   } else if (auth == nullptr) {
     phase = Phase::Failed;
     ui_show_message("Not configured", "LOXONE_AUTH must be \"basic\" or \"token\".", false);
