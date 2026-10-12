@@ -356,6 +356,19 @@ void panel_backlight(uint8_t percent, uint32_t fade_ms) {
 
 uint8_t panel_backlight_level() { return bl_level; }
 
+void panel_fb_stats(uint32_t* black, uint32_t* white, uint32_t* red, uint32_t* other) {
+  *black = *white = *red = *other = 0;
+  if (fb == nullptr) return;
+  for (size_t i = 0; i < static_cast<size_t>(kPanelWidth) * kPanelHeight; i += 4) {  // every 4th pixel
+    uint16_t c = fb[i];
+    int r = c >> 11, g = (c >> 5) & 0x3F, b = c & 0x1F;
+    if (r < 3 && g < 6 && b < 3) ++*black;
+    else if (r > 26 && g > 54 && b > 26) ++*white;
+    else if (r > 24 && g < 10 && b < 6) ++*red;
+    else ++*other;
+  }
+}
+
 bool panel_touch_ok() { return touch_ok; }
 
 bool panel_gt911_read(uint16_t reg, uint8_t* out, size_t n) { return touch_ok && gt_read(reg, out, n); }

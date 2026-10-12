@@ -17,3 +17,4 @@ void panel_relay_set(bool on);
 // Backlight (GPIO38, LEDC PWM). percent 0..100, optional fade.
 void panel_backlight(uint8_t percent, uint32_t fade_ms);
 uint8_t panel_backlight_level();
+void panel_fb_stats(uint32_t* black, uint32_t* white, uint32_t* red, uint32_t* other);  // sampled framebuffer

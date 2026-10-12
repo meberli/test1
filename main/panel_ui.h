@@ -143,3 +143,5 @@ void ui_ota_done(bool ok, const char* err);
 void ui_rem_test(int minutes, int kind);
 void ui_rem_clear();
 int ui_rem_pending();
+void ui_saver_describe(char* out, size_t n);  // screensaver state for DIAGFB
+void ui_saver_runtime(int saver);              // DIAGSAVER: not saved to NVS

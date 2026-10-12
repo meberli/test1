@@ -3383,6 +3383,19 @@ void ui_power_describe(char* out, size_t n) {
 
 lv_obj_t* ui_overlay() { return scr_off ? sleep_layer : nullptr; }
 
+void ui_saver_runtime(int saver) { disp.saver = static_cast<uint8_t>(saver); }
+
+void ui_saver_describe(char* out, size_t n) {
+  struct tm t;
+  bool valid = local_now(&t, nullptr);
+  snprintf(out, n, "scr_off=%d act_sleep=%d saver=%d analog_vis=%d digital_vis=%d timer_paused=%d bl=%u time_valid=%d %02d:%02d",
+           scr_off ? 1 : 0, lv_scr_act() == sleep_layer ? 1 : 0, disp.saver,
+           saver_analog != nullptr && !lv_obj_has_flag(saver_analog, LV_OBJ_FLAG_HIDDEN) ? 1 : 0,
+           saver_digital != nullptr && !lv_obj_has_flag(saver_digital, LV_OBJ_FLAG_HIDDEN) ? 1 : 0,
+           saver_timer != nullptr && saver_timer->paused ? 1 : 0, static_cast<unsigned>(panel_backlight_level()),
+           valid ? 1 : 0, t.tm_hour, t.tm_min);
+}
+
 void ui_set_screen_timeout(uint16_t seconds) {
   scr_timeout_s = seconds;
   last_activity = now_ms();

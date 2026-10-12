@@ -5,7 +5,7 @@ Screens: home, Licht, Storen, weather day, settings, Bildschirm, Uhrzeit,
 digital clock, analog clock (the waking tap must be swallowed). Restores the
 black saver and a 2 min timeout at the end.
 """
-import argparse, os, time
+import argparse, os, re, time
 from panel_test import Panel
 
 def main():
@@ -29,6 +29,11 @@ def main():
         if "home" in state(): break
         time.sleep(1)
     time.sleep(3)
+    # Remember the user's screensaver and timeout: restored at the end (an
+    # earlier version always restored "Schwarz", which removed the clock).
+    s0 = state()
+    m = re.search(r"saver=(\d)", s0); saver0 = int(m.group(1)) if m else 0
+    m = re.search(r" to=(\d+)", s0); to0 = int(m.group(1)) if m else 120
     shot("home"); check("home", "home" in state())
     tap("cat:licht"); shot("licht"); check("licht", "Licht" in state()); home()
     tap("cat:storen"); shot("storen"); home()
@@ -46,7 +51,10 @@ def main():
     p.cmd("SCRTO 2"); time.sleep(4); shot("clock_analog"); time.sleep(2); shot("clock_analog_2")
     s = state(); check("off analog", "scr=off" in s and "saver=2" in s, s)
     p.tap(240, 240); time.sleep(1); s = state(); check("wake analog swallowed", "scr=on" in s and "display" in s, s)
-    p.cmd("SCRTO 0"); tap("saver:0"); tap("to:3"); shot("display_restored")
+    p.cmd("SCRTO 0"); tap(f"saver:{saver0}")
+    kTimeouts = [0, 30, 60, 120, 300, 600]
+    tap(f"to:{kTimeouts.index(to0) if to0 in kTimeouts else 3}"); shot("display_restored")
+    s = state(); check("user saver restored", f"saver={saver0}" in s, s)
     home()
     print("RESULT", sum(res), "/", len(res))
 

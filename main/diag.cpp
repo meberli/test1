@@ -11,6 +11,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
+#include "panel_hw.h"
+#include "panel_ui.h"
 #include "sys.h"
 #include "test_harness.h"
 
@@ -66,6 +68,20 @@ void handle(const char* line) {
     console_printf("DIAG GT911 cfg_ver=0x%02X xmax=%u ymax=%u touches=%u sw1=0x%02X sw2=0x%02X shake=0x%02X filter=0x%02X "
                    "large=0x%02X noise=0x%02X cmd=0x%02X status=0x%02X\n", cfg[0], cfg[1] | (cfg[2] << 8),
                    cfg[3] | (cfg[4] << 8), cfg[5], cfg[6], cfg[7], cfg[8], cfg[9], cfg[10], cfg[11], cmd, st);
+  } else if (sscanf(line, "DIAGSCRTO %d", &a) == 1) {
+    ui_set_screen_timeout(static_cast<uint16_t>(a));  // this boot only, not saved
+    console_puts("DIAG OK");
+  } else if (sscanf(line, "DIAGSAVER %d", &a) == 1 && a >= 0 && a <= 2) {
+    ui_saver_runtime(a);  // this boot only: the saved setting is not touched
+    console_puts("DIAG OK");
+  } else if (strcmp(line, "DIAGFB") == 0) {
+    // What is really in the panel framebuffer (not an LVGL snapshot).
+    uint32_t black = 0, white = 0, red = 0, other = 0;
+    panel_fb_stats(&black, &white, &red, &other);
+    char ui[160];
+    ui_saver_describe(ui, sizeof(ui));
+    console_printf("DIAG FB black=%lu white=%lu red=%lu other=%lu | %s\n", (unsigned long)black, (unsigned long)white,
+                   (unsigned long)red, (unsigned long)other, ui);
   } else if (strcmp(line, "DIAGSTATS") == 0) {
     stats();
   }
