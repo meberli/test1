@@ -24,6 +24,7 @@
 #include "webcams.h"
 #include "info.h"
 #include "maint.h"
+#include "ota_check.h"
 #include "board_pins.h"
 #include "test_harness.h"
 
@@ -263,6 +264,8 @@ struct NetRequest {
   CamRequest cam;
   int station;      // Transit: board index
   char url[256];    // Ota
+  bool ota_check;   // Ota: only check for a newer version
+  bool ota_own;     // Ota check: url set by the user
 };
 
 struct NetResult {
@@ -304,6 +307,7 @@ bool windy_key(char* key, size_t n) {
 // Results too big for the queue: written by the network task before it posts
 // the result, read by the UI task in handle_result (one request in flight).
 Board g_board;
+OtaCheck g_ota;
 Calendar g_cal;
 MeteoNow g_meteo;
 Station g_hits[kMaxStationHits];
@@ -565,6 +569,11 @@ void net_task(void*) {
         break;
       }
       case NetOp::Ota:
+        if (req.ota_check) {
+          res.index = 1;  // marks a check result
+          res.ok = ota_check(req.url, req.ota_own, &g_ota);
+          break;
+        }
         console_printf("OTA from %s\n", req.url);
         res.ok = maint_ota_from_url(req.url, res.detail, sizeof(res.detail));
         console_printf("OTA %s %s\n", res.ok ? "installed" : "failed", res.ok ? "" : res.detail);
@@ -671,7 +680,8 @@ void handle_result(const NetResult& res) {
       ui_meteo_done(res.ok, g_meteo);
       break;
     case NetOp::Ota:
-      ui_ota_done(res.ok, res.detail);
+      if (res.index == 1) ui_ota_checked(g_ota);
+      else ui_ota_done(res.ok, res.detail);
       break;
     case NetOp::Weather:
       ui_set_weather(res.ok, res.temp_c, res.code);
@@ -746,7 +756,7 @@ void poll() {
       } else if (ui_take_cam(&r.cam)) {
         r.op = NetOp::Camera;
         net_post(r);
-      } else if (ui_take_ota(r.url, sizeof(r.url))) {
+      } else if (ui_take_ota(r.url, sizeof(r.url), &r.ota_check, &r.ota_own)) {
         r.op = NetOp::Ota;
         net_post(r);
       } else if (ui_take_transit(&r.station)) {

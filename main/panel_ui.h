@@ -8,6 +8,7 @@
 #include "webcams.h"
 #include "info.h"
 #include "maint.h"
+#include "ota_check.h"
 
 struct LoxoneCommandRequest {
   char action[40];
@@ -135,13 +136,17 @@ bool ui_take_calendar();
 void ui_calendar_done(bool ok, const Calendar& cal);
 bool ui_take_meteo();
 void ui_meteo_done(bool ok, const MeteoNow& m);
-bool ui_take_ota(char* url, size_t n);  // "Update" tapped: URL to install
+bool ui_take_ota(char* url, size_t n, bool* check, bool* own);  // check or install request
+void ui_ota_checked(const OtaCheck& c);
 void ui_ota_done(bool ok, const char* err);
 
 // Termin-Erinnerungen (test harness): synthetic event in `minutes` (kind 1 = all-day waste),
 // clear queue and acknowledged list, pending count.
 void ui_rem_test(int minutes, int kind);
 void ui_rem_clear();
+void ui_set_waste_until(uint16_t minutes);  // persists (NVS), refreshes chip and reminders
+uint16_t ui_waste_until();
+bool ui_waste_test();  // test harness: inject a waste collection today
 int ui_rem_pending();
 void ui_saver_describe(char* out, size_t n);  // screensaver state for DIAGFB
 void ui_saver_runtime(int saver);              // DIAGSAVER: not saved to NVS

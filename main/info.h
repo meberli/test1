@@ -56,7 +56,7 @@ struct Warning {
   bool outlook;
   int64_t from;   // Unix seconds
   int64_t to;     // 0 = open end
-  char text[200]; // first lines, Latin-1 subset
+  char text[600]; // warning text, Latin-1 subset (the list scrolls)
 };
 constexpr int kMaxWarnings = 4;
 constexpr int kRainSteps = 12;  // 10-minute steps: the next 2 hours

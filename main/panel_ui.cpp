@@ -3108,7 +3108,12 @@ void ui_init() {
   lv_obj_set_pos(weather, 24, 56);
   lv_obj_set_size(weather, kScreen - 48, 222);
   style_glass(weather, 28);
-  lv_obj_clear_flag(weather, LV_OBJ_FLAG_CLICKABLE);
+  // Tapping the current-weather block opens today's details; the day panels
+  // below are children and keep their own taps.
+  lv_obj_clear_flag(weather, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_event_cb(weather, on_day_panel, LV_EVENT_CLICKED, reinterpret_cast<void*>(static_cast<intptr_t>(0)));
+  watch(weather);
+  reg("wx:now", weather);
 
   weather_big = make_label(weather, &font_icons_80, lv_color_hex(kAmber));
   lv_obj_set_pos(weather_big, 18, 18);
@@ -3948,21 +3953,57 @@ void ui_meteo_done(bool ok, const MeteoNow& m) {
   if (nav == Nav::Rain) rain_refresh();
 }
 
-bool ui_take_ota(char* url, size_t n) {
-  if (!ota_request) return false;
-  ota_request = false;
-  if (!settings_load_text(kUrlOta, url, n, nullptr)) {
-    snprintf(ota_msg, sizeof(ota_msg), "Keine Update-URL");
-    return false;
+bool ui_take_ota(char* url, size_t n, bool* check, bool* own) {
+  if (ota_check_req) {
+    ota_check_req = false;
+    bool o = false;
+    if (!settings_load_text(kUrlOta, url, n, &o) || url[0] == '\0') {
+      ota_state = OtaUi::Error;
+      snprintf(ota_msg, sizeof(ota_msg), "Keine Update-URL");
+      return false;
+    }
+    *check = true;
+    *own = o;
+    ota_running = true;
+    return true;
   }
-  ota_running = true;
-  return true;
+  if (ota_install_req) {
+    ota_install_req = false;
+    snprintf(url, n, "%s", ota_new_url);
+    *check = false;
+    *own = false;
+    ota_running = true;
+    return true;
+  }
+  return false;
+}
+
+void ui_ota_checked(const OtaCheck& c) {
+  ota_running = false;
+  if (!c.ok) {
+    ota_state = OtaUi::Error;
+    snprintf(ota_msg, sizeof(ota_msg), "%s", c.err);
+  } else if (c.cmp > 0) {
+    ota_state = OtaUi::Newer;
+    snprintf(ota_new_ver, sizeof(ota_new_ver), "%s", c.version);
+    snprintf(ota_new_url, sizeof(ota_new_url), "%s", c.url);
+    snprintf(ota_notes, sizeof(ota_notes), "%s", c.notes);
+    ota_msg[0] = '\0';
+  } else {
+    ota_state = OtaUi::Current;
+    ota_new_ver[0] = '\0';
+    ota_new_url[0] = '\0';
+    if (c.cmp < 0) snprintf(ota_msg, sizeof(ota_msg), "Neueste Version online: v%s", c.version);
+    else ota_msg[0] = '\0';
+  }
+  if (nav == Nav::Maint) maint_refresh();
 }
 
 void restart_now(lv_timer_t*) { esp_restart(); }
 
 void ui_ota_done(bool ok, const char* err) {
   ota_running = false;
+  ota_state = ok ? OtaUi::Installing : OtaUi::Error;
   snprintf(ota_msg, sizeof(ota_msg), "%s", ok ? "Installiert. Neustart ..." : err);
   if (nav == Nav::Maint) maint_refresh();
   if (ok) {

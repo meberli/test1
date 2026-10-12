@@ -73,7 +73,11 @@ int64_t rem_trigger(const CalEvent& e, uint8_t lead) {
 }
 
 // Unacknowledged reminders drop out this long after the event start.
-int64_t rem_expire(const CalEvent& e) { return e.start + (e.all_day ? 86400 : 6 * 3600); }
+// Waste: at the "Hinweis am Abfuhrtag bis" time of the collection day.
+int64_t rem_expire(const CalEvent& e) {
+  if (e.kind == 1 && waste_until_min < 1440) return at_local(e.start, 0, waste_until_min / 60, waste_until_min % 60);
+  return e.start + (e.all_day ? 86400 : 6 * 3600);
+}
 
 bool rem_queued(uint32_t key) {
   for (int i = 0; i < rem_n; ++i) {
@@ -307,6 +311,7 @@ lv_obj_t* rem_switch_row(lv_obj_t* parent, int y, int h, const char* name, const
 
 void build_reminders(lv_obj_t* screen) {
   rem_cfg = settings_load_reminders();
+  waste_until_min = settings_load_waste_until();
 
   remset_root = make_screen_root(screen, "Erinnerungen");
   rem_switch_row(remset_root, 58, 60, "Termin-Erinnerungen", ICON_NOTIFY, kAmber, 0, "rem:on");
@@ -400,6 +405,36 @@ void ui_rem_test(int minutes, int all_day_kind) {
   e.uid = cal_hash(u);
   ++rem_test_n;
   rem_tick(true);
+}
+
+void ui_set_waste_until(uint16_t minutes) {
+  if (minutes > 1440) return;
+  waste_until_min = minutes;
+  bool ok = settings_save_waste_until(minutes);
+  console_printf("Waste hint until %u min saved=%d\n", minutes, ok ? 1 : 0);
+  calset_refresh();
+  home_chips_refresh();
+  rem_tick(true);
+}
+
+uint16_t ui_waste_until() { return waste_until_min; }
+
+// Test: a waste collection today at the top of the loaded calendar.
+bool ui_waste_test() {
+  if (cal == nullptr || !cal_have) return false;
+  int n = cal->n_waste < kMaxWaste ? cal->n_waste : kMaxWaste - 1;
+  for (int i = n; i > 0; --i) cal->waste[i] = cal->waste[i - 1];
+  CalEvent& e = cal->waste[0];
+  memset(&e, 0, sizeof(e));
+  e.kind = 1;
+  e.all_day = true;
+  e.start = at_local(time(nullptr), 0, 0, 0);
+  snprintf(e.title, sizeof(e.title), "Test Papier");
+  e.uid = cal_hash("harness-waste-today");
+  cal->n_waste = n + 1;
+  home_chips_refresh();
+  rem_tick(true);
+  return true;
 }
 
 void ui_rem_clear() {

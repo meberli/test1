@@ -13,6 +13,7 @@
 #include "sdkconfig.h"
 #include "panel_hw.h"
 #include "panel_ui.h"
+#include "ota_check.h"
 #include "sys.h"
 #include "test_harness.h"
 
@@ -74,6 +75,11 @@ void handle(const char* line) {
   } else if (sscanf(line, "DIAGSAVER %d", &a) == 1 && a >= 0 && a <= 2) {
     ui_saver_runtime(a);  // this boot only: the saved setting is not touched
     console_puts("DIAG OK");
+  } else if (strncmp(line, "DIAGVER", 7) == 0) {
+    // Pretend to run another version for the update check (this boot only).
+    const char* v = line[7] == ' ' ? line + 8 : "";
+    ota_set_version_override(v);
+    console_printf("DIAG version for update check: %s\n", ota_running_version());
   } else if (strcmp(line, "DIAGFB") == 0) {
     // What is really in the panel framebuffer (not an LVGL snapshot).
     uint32_t black = 0, white = 0, red = 0, other = 0;

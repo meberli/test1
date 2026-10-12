@@ -4,6 +4,7 @@
 #include "test_harness.h"
 #include "settings.h"
 #include "net.h"
+#include "ota_check.h"
 #include <string.h>
 
 #include "sys.h"
@@ -29,7 +30,7 @@ uint32_t t0 = 0, dur = 0;
 int cur_x = 0, cur_y = 0;
 bool auto_release = false;
 
-char line[96];
+char line[320];  // long enough for TYPE <update URL>
 size_t line_len = 0;
 
 int clampc(int v, int max) { return v < 0 ? 0 : (v >= max ? max - 1 : v); }
@@ -193,6 +194,11 @@ void handle(char* cmd) {
   } else if (sscanf(cmd, "REMTEST %d %d", &a, &b) == 2) {
     ui_rem_test(a, b);
     console_puts("OK");
+  } else if (strncmp(cmd, "WASTEUNTIL", 10) == 0) {
+    if (cmd[10] == ' ') ui_set_waste_until(static_cast<uint16_t>(atoi(cmd + 11)));
+    console_printf("WASTEUNTIL %u\n", ui_waste_until());
+  } else if (strcmp(cmd, "WASTETEST") == 0) {
+    console_puts(ui_waste_test() ? "OK" : "ERR no calendar");
   } else if (strcmp(cmd, "REMCLEAR") == 0) {
     ui_rem_clear();
     console_puts("OK");
@@ -208,6 +214,9 @@ void handle(char* cmd) {
     console_puts("OK");
   } else if (strcmp(cmd, "WIFIRESTORE") == 0) {
     console_puts(settings_test_wifi(2, "") ? "OK" : "ERR nvs");
+  } else if (strncmp(cmd, "VERSET", 6) == 0) {
+    ota_set_version_override(cmd[6] == ' ' ? cmd + 7 : "");
+    console_printf("VERSION %s\n", ota_running_version());
   } else if (strcmp(cmd, "LOCRESET") == 0) {
     ui_reset_location();
     console_puts("OK");

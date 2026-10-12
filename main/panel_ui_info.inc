@@ -28,9 +28,18 @@ bool meteo_have = false;
 uint32_t meteo_next_ms = 0;
 bool meteo_inflight = false;
 
-bool ota_request = false;
-bool ota_running = false;
+// Firmware update: always "Firmware prüfen" first; the install action only
+// appears when the check found a strictly newer version.
+enum class OtaUi { Idle, Checking, Current, Newer, Error, Installing };
+OtaUi ota_state = OtaUi::Idle;
+bool ota_check_req = false;    // UI -> net: check
+bool ota_install_req = false;  // UI -> net: install ota_new_url
+bool ota_running = false;      // request handed to the net task
+uint32_t ota_t0 = 0;
 char ota_msg[96] = "";
+char ota_new_ver[32] = "";
+char ota_new_url[256] = "";
+char ota_notes[96] = "";
 
 lv_obj_t* home_warn = nullptr;   // pill in the weather card
 lv_obj_t* home_warn_txt = nullptr;
@@ -81,6 +90,9 @@ bool st_busy = false;
 
 lv_obj_t* calset_root = nullptr;
 lv_obj_t* calset_val[2] = {};
+lv_obj_t* calset_until_val = nullptr;
+uint16_t waste_until_min = kWasteUntilDefault;  // loaded in ui_init
+constexpr uint16_t kWasteUntilPresets[] = {420, 480, 540, 600, 720, 840, 1080, 1440};
 lv_obj_t* txt_root = nullptr;
 lv_obj_t* txt_title = nullptr;
 lv_obj_t* txt_cur = nullptr;
@@ -95,6 +107,7 @@ lv_obj_t* maint_val[8] = {};
 lv_obj_t* maint_web_lbl = nullptr;
 lv_obj_t* maint_web_sw = nullptr;
 lv_obj_t* maint_ota_lbl = nullptr;
+lv_obj_t* maint_ota_title = nullptr;
 lv_obj_t* maint_url_val = nullptr;
 
 
@@ -148,6 +161,23 @@ void fmt_hm(char* out, size_t n, int64_t t) {
 }
 
 // Days from today (local): 0 today, 1 tomorrow, -1 yesterday.
+int day_offset(int64_t t);
+
+// A waste collection that is today and past the "Hinweis bis" time: no longer
+// shown on the home screen (chip) nor as a reminder card.
+bool waste_done_today(const CalEvent& e) {
+  if (e.kind != 1 || day_offset(e.start) != 0) return false;
+  time_t now = time(nullptr);
+  struct tm lt;
+  localtime_r(&now, &lt);
+  return lt.tm_hour * 60 + lt.tm_min >= waste_until_min;
+}
+
+void fmt_waste_until(char* out, size_t n, uint16_t m) {
+  if (m >= 1440) snprintf(out, n, "ganzer Tag");
+  else snprintf(out, n, "%02u:%02u Uhr", m / 60, m % 60);
+}
+
 int day_offset(int64_t t) {
   time_t now = time(nullptr);
   struct tm a, b;
@@ -386,7 +416,10 @@ void rain_refresh() {
     style_glass(card, 16);
     lv_obj_set_style_pad_all(card, 12, 0);
     lv_obj_set_style_border_color(card, lv_color_hex(level_color(w.level)), 0);
-    lv_obj_clear_flag(card, LV_OBJ_FLAG_CLICKABLE);
+    // Cards must be hit-testable so a drag on them scrolls the list (LVGL 8
+    // only hit-tests clickable objects); the scroll chains to rain_list.
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(card, LV_OBJ_FLAG_SCROLL_CHAIN);
     lv_obj_t* ic = make_label(card, &font_icons_24, lv_color_hex(level_color(w.level)));
     lv_label_set_text(ic, ICON_WARNING);
     lv_obj_set_pos(ic, 0, 0);
@@ -487,7 +520,7 @@ void home_chips_refresh() {
   const CalEvent* waste = nullptr;
   for (int i = 0; i < cal->n_waste; ++i) {
     int off = day_offset(cal->waste[i].start);
-    if (off >= 0 && off <= 1) {
+    if (off >= 0 && off <= 1 && !waste_done_today(cal->waste[i])) {
       waste = &cal->waste[i];
       break;
     }
@@ -511,11 +544,12 @@ void home_chips_refresh() {
     if (e.all_day) lv_label_set_text(chip_cal_top, day);
     else lv_label_set_text_fmt(chip_cal_top, "%s %s", day, hm);
     lv_label_set_text(chip_cal_main, e.title);
-  } else if (cal->n_waste > 0) {
+  } else if (cal->n_waste > (waste_done_today(cal->waste[0]) ? 1 : 0)) {
+    const CalEvent& w = cal->waste[waste_done_today(cal->waste[0]) ? 1 : 0];
     char day[24];
-    fmt_day(day, sizeof(day), cal->waste[0].start);
+    fmt_day(day, sizeof(day), w.start);
     lv_label_set_text_fmt(chip_cal_top, "Abfuhr %s", day);
-    lv_label_set_text(chip_cal_main, cal->waste[0].title);
+    lv_label_set_text(chip_cal_main, w.title);
   } else {
     lv_label_set_text(chip_cal_top, "Kalender");
     lv_label_set_text(chip_cal_main, "Keine Termine");
@@ -690,6 +724,11 @@ void calset_refresh() {
     if (calset_val[i] != nullptr) lv_label_set_text(calset_val[i], sum);
   }
   memset(v, 0, sizeof(v));
+  if (calset_until_val != nullptr) {
+    char t[24];
+    fmt_waste_until(t, sizeof(t), waste_until_min);
+    lv_label_set_text(calset_until_val, t);
+  }
   if (set_cal_val != nullptr) {
     if (cal != nullptr && cal_have)
       lv_label_set_text_fmt(set_cal_val, "%d Termine \xC2\xB7 %d Abfuhrdaten", cal->n_events, cal->n_waste);
@@ -731,6 +770,15 @@ void on_calset_row(lv_event_t* e) {
   int which = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
   console_printf("Activate calset %d\n", which);
   open_text(static_cast<uint8_t>(which), Nav::CalSet);
+}
+
+// "Hinweis am Abfuhrtag bis": each tap steps to the next preset.
+void on_waste_until(lv_event_t*) {
+  if (gesture_consumed) return;
+  size_t n = sizeof(kWasteUntilPresets) / sizeof(kWasteUntilPresets[0]);
+  size_t i = 0;
+  while (i < n && kWasteUntilPresets[i] <= waste_until_min) ++i;
+  ui_set_waste_until(kWasteUntilPresets[i < n ? i : 0]);
 }
 
 void queue_text(const char* value) {
@@ -793,9 +841,39 @@ void maint_refresh() {
   if (s.web) lv_label_set_text_fmt(maint_web_lbl, "http://%s/  Backup, Restore, Upload", s.ip);
   else lv_label_set_text(maint_web_lbl, "Backup, Restore und Upload im Browser");
   int pct = maint_ota_progress();
-  if (ota_running || pct >= 0) lv_label_set_text_fmt(maint_ota_lbl, "Update l\xC3\xA4uft ... %d %%", pct < 0 ? 0 : pct);
-  else if (maint_restart_pending()) lv_label_set_text(maint_ota_lbl, "Neustart ...");
-  else lv_label_set_text(maint_ota_lbl, ota_msg[0] != '\0' ? ota_msg : "Firmware aus dem Internet laden");
+  if (ota_state == OtaUi::Checking && now_ms() - ota_t0 > 45000) {  // e.g. offline: never sent
+    ota_check_req = false;
+    ota_state = OtaUi::Error;
+    snprintf(ota_msg, sizeof(ota_msg), "Keine Antwort - WLAN verbunden?");
+  }
+  const char* run = ota_running_version();
+  char title[64];
+  char sub[128];
+  if (maint_restart_pending() || (ota_state == OtaUi::Installing && !ota_running && !ota_install_req && pct < 0)) {
+    snprintf(title, sizeof(title), "Installiert");
+    snprintf(sub, sizeof(sub), "Neustart ...");
+  } else if (ota_state == OtaUi::Installing || pct >= 0) {
+    snprintf(title, sizeof(title), "Installiere v%s", ota_new_ver[0] ? ota_new_ver : "?");
+    snprintf(sub, sizeof(sub), "Update l\xC3\xA4uft ... %d %%", pct < 0 ? 0 : pct);
+  } else if (ota_state == OtaUi::Checking) {
+    snprintf(title, sizeof(title), "Pr\xC3\xBC" "fe ...");
+    snprintf(sub, sizeof(sub), "Installiert: v%s", run);
+  } else if (ota_state == OtaUi::Newer) {
+    snprintf(title, sizeof(title), "Update auf v%s installieren", ota_new_ver);
+    if (ota_notes[0] != '\0') snprintf(sub, sizeof(sub), "Neu: %s", ota_notes);
+    else snprintf(sub, sizeof(sub), "Installiert: v%s - tippen zum Installieren", run);
+  } else if (ota_state == OtaUi::Current) {
+    snprintf(title, sizeof(title), "Aktuell (v%s)", run);
+    snprintf(sub, sizeof(sub), "%s", ota_msg[0] ? ota_msg : "Tippen, um erneut zu pr\xC3\xBC" "fen");
+  } else if (ota_state == OtaUi::Error) {
+    snprintf(title, sizeof(title), "Firmware pr\xC3\xBC" "fen");
+    snprintf(sub, sizeof(sub), "%s", ota_msg);
+  } else {
+    snprintf(title, sizeof(title), "Firmware pr\xC3\xBC" "fen");
+    snprintf(sub, sizeof(sub), "Installiert: v%s", run);
+  }
+  lv_label_set_text(maint_ota_title, title);
+  lv_label_set_text(maint_ota_lbl, sub);
   char v[256];
   bool own = false;
   settings_load_text(kUrlOta, v, sizeof(v), &own);
@@ -807,6 +885,12 @@ void maint_refresh() {
 
 void open_maint() {
   nav = Nav::Maint;
+  // A finished check is not kept: back on this screen it starts from
+  // "Firmware prüfen" again (the URL may have changed meanwhile).
+  if (!ota_running && !ota_check_req && !ota_install_req && ota_state != OtaUi::Installing) {
+    ota_state = OtaUi::Idle;
+    ota_msg[0] = '\0';
+  }
   hide_settings();
   maint_refresh();
   show(maint_root);
@@ -823,9 +907,16 @@ void on_maint_btn(lv_event_t* e) {
     open_text(kUrlOta, Nav::Maint);
     return;
   } else if (which == 2) {
-    if (!ota_running && !ota_request) {
-      ota_request = true;
-      snprintf(ota_msg, sizeof(ota_msg), "Update startet ...");
+    if (ota_running || ota_check_req || ota_install_req || maint_restart_pending()) {
+      // busy
+    } else if (ota_state == OtaUi::Newer) {
+      ota_install_req = true;  // only offered after a check found a newer version
+      ota_state = OtaUi::Installing;
+    } else {
+      ota_check_req = true;
+      ota_state = OtaUi::Checking;
+      ota_t0 = now_ms();
+      ota_msg[0] = '\0';
     }
   }
   maint_refresh();
@@ -939,6 +1030,7 @@ void build_info_screens(lv_obj_t* screen) {
   lv_label_set_text(unit, "mm/h");
   lv_obj_align(unit, LV_ALIGN_TOP_RIGHT, -16, 12);
   rain_list = make_list(rain_root, 258, 172);
+  lv_obj_add_flag(rain_list, LV_OBJ_FLAG_CLICKABLE);  // drags between cards scroll too
   rain_status = make_label(rain_root, &font_inter_14, lv_color_hex(kTextDim));
   lv_obj_set_pos(rain_status, 24, 434);
   lv_obj_t* rn = wx_handle(rain_root, 470);
@@ -972,8 +1064,10 @@ void build_info_screens(lv_obj_t* screen) {
   calset_root = make_screen_root(screen, "Kalender");
   make_value_row(calset_root, 60, "Familienkalender", ICON_EVENT, kPurple, on_calset_row, 0, "calset:ical", &calset_val[0]);
   make_value_row(calset_root, 140, "Abfallkalender", ICON_RECYCLE, kGreen, on_calset_row, 1, "calset:waste", &calset_val[1]);
+  make_value_row(calset_root, 220, "Hinweis am Abfuhrtag bis", ICON_SCHEDULE, kAmber, on_waste_until, 0, "calset:until",
+                 &calset_until_val);
   lv_obj_t* calnote = make_label(calset_root, &font_inter_14, lv_color_hex(kTextDim));
-  lv_obj_set_pos(calnote, 24, 228);
+  lv_obj_set_pos(calnote, 24, 308);
   lv_obj_set_width(calnote, 432);
   lv_label_set_long_mode(calnote, LV_LABEL_LONG_WRAP);
   lv_label_set_text(calnote,
@@ -1026,26 +1120,27 @@ void build_info_screens(lv_obj_t* screen) {
   lv_obj_set_width(maint_web_lbl, 290);
   lv_obj_t* upd = make_row(maint_root, 72, ICON_UPDATE, kGreen, on_maint_btn, 2);
   lv_obj_set_pos(upd, kMargin, 334);
-  lv_obj_set_width(upd, 210);
   reg("maint:ota", upd);
-  lv_obj_t* un = make_label(upd, &font_inter_sb16, lv_color_hex(kText));
-  lv_label_set_text(un, "Update");
-  lv_obj_align(un, LV_ALIGN_TOP_LEFT, 56, 13);
+  maint_ota_title = make_label(upd, &font_inter_sb16, lv_color_hex(kText));
+  lv_obj_set_width(maint_ota_title, 350);
+  lv_label_set_long_mode(maint_ota_title, LV_LABEL_LONG_DOT);
+  lv_label_set_text(maint_ota_title, "Firmware pr\xC3\xBC" "fen");
+  lv_obj_align(maint_ota_title, LV_ALIGN_TOP_LEFT, 56, 13);
   maint_ota_lbl = make_label(upd, &font_inter_14, lv_color_hex(kTextDim));
-  lv_obj_set_width(maint_ota_lbl, 144);
+  lv_obj_set_width(maint_ota_lbl, 350);
   lv_label_set_long_mode(maint_ota_lbl, LV_LABEL_LONG_DOT);
   lv_obj_align(maint_ota_lbl, LV_ALIGN_BOTTOM_LEFT, 56, -13);
-  lv_obj_t* url = make_row(maint_root, 72, ICON_PUBLIC, kAccent, on_maint_btn, 1);
-  lv_obj_set_pos(url, 246, 334);
-  lv_obj_set_width(url, 214);
+  // Advanced: own update URL (checked the same way, by the image version).
+  lv_obj_t* url = make_row(maint_root, 50, ICON_PUBLIC, kAccent, on_maint_btn, 1);
+  lv_obj_set_pos(url, kMargin, 414);
   reg("maint:url", url);
-  lv_obj_t* uln = make_label(url, &font_inter_sb16, lv_color_hex(kText));
+  lv_obj_t* uln = make_label(url, &font_inter_14, lv_color_hex(kText));
   lv_label_set_text(uln, "Update-URL");
-  lv_obj_align(uln, LV_ALIGN_TOP_LEFT, 56, 13);
+  lv_obj_align(uln, LV_ALIGN_LEFT_MID, 56, 0);
   maint_url_val = make_label(url, &font_inter_14, lv_color_hex(kTextDim));
-  lv_obj_set_width(maint_url_val, 146);
+  lv_obj_set_width(maint_url_val, 250);
   lv_label_set_long_mode(maint_url_val, LV_LABEL_LONG_DOT);
-  lv_obj_align(maint_url_val, LV_ALIGN_BOTTOM_LEFT, 56, -13);
+  lv_obj_align(maint_url_val, LV_ALIGN_RIGHT_MID, -16, 0);
 }
 
 // Once a second (clock_tick).
@@ -1091,7 +1186,8 @@ bool info_describe(char* out, size_t n) {
       return true;
     }
     case Nav::Maint:
-      snprintf(out, n, "maint web=%d ota=%d", maint_web_running() ? 1 : 0, maint_ota_progress());
+      snprintf(out, n, "maint web=%d ota=%d otaui=%d new=%s", maint_web_running() ? 1 : 0, maint_ota_progress(),
+               static_cast<int>(ota_state), ota_new_ver[0] ? ota_new_ver : "-");
       return true;
     default:
       return false;

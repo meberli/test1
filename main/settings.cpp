@@ -437,6 +437,25 @@ ReminderSettings settings_load_reminders() {
   return r;
 }
 
+uint16_t settings_load_waste_until() {
+  uint16_t v = kWasteUntilDefault;
+  nvs_handle_t h;
+  if (nvs_open(kNs, NVS_READONLY, &h) != ESP_OK) return v;
+  uint16_t t = 0;
+  if (nvs_get_u16(h, "wst_until", &t) == ESP_OK && t <= 1440) v = t;
+  nvs_close(h);
+  return v;
+}
+
+bool settings_save_waste_until(uint16_t minutes) {
+  if (minutes > 1440) return false;
+  nvs_handle_t h;
+  if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return false;
+  bool ok = nvs_set_u16(h, "wst_until", minutes) == ESP_OK && nvs_commit(h) == ESP_OK;
+  nvs_close(h);
+  return ok;
+}
+
 bool settings_save_reminders(const ReminderSettings& r) {
   nvs_handle_t h;
   if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return false;
