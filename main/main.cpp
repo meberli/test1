@@ -5,6 +5,7 @@
 #include "freertos/queue.h"
 #include "lvgl.h"
 #include "net.h"
+#include "settings.h"
 #include "sdkconfig.h"
 #include "sys.h"
 
@@ -47,6 +48,68 @@ uint32_t next_weather_ms = 0;
 // The parsed document (~15 KB) is allocated from the heap, which puts large
 // blocks in PSRAM on this board.
 static WeatherDetailDay week[kWxDays];
+// Weather location; written only by the network task (and before it starts).
+Location g_loc;
+WifiAp g_aps[kMaxAps];
+GeoPlace g_places[kMaxPlaces];
+
+void url_encode(const char* in, char* out, size_t n) {
+  static const char* hex = "0123456789ABCDEF";
+  size_t o = 0;
+  for (const unsigned char* p = reinterpret_cast<const unsigned char*>(in); *p != 0 && o + 4 < n; ++p) {
+    if ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') || *p == '-' ||
+        *p == '.' || *p == '_') {
+      out[o++] = static_cast<char>(*p);
+    } else {
+      out[o++] = '%';
+      out[o++] = hex[*p >> 4];
+      out[o++] = hex[*p & 15];
+    }
+  }
+  out[o] = '\0';
+}
+
+// Open-Meteo geocoding: place name -> up to kMaxPlaces results (German names).
+int geocode(const char* query, GeoPlace* out) {
+  char q[160];
+  url_encode(query, q, sizeof(q));
+  char url[300];
+  snprintf(url, sizeof(url), "https://geocoding-api.open-meteo.com/v1/search?name=%s&language=de&count=%d&format=json",
+           q, kMaxPlaces);
+  constexpr size_t kCap = 160 * 1024;  // results carry long postcode lists
+  uint8_t* body = static_cast<uint8_t*>(heap_caps_malloc(kCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (body == nullptr) return -1;
+  HttpGetResult http = http_get(url, nullptr, nullptr, body, kCap, 10000);
+  if (!http.ok || http.status != 200) {
+    console_printf("Geocode HTTP %d %s\n", http.status, http.error);
+    heap_caps_free(body);
+    return -1;
+  }
+  StaticJsonDocument<256> filter;
+  for (const char* k : {"name", "admin1", "country_code", "latitude", "longitude"}) filter["results"][0][k] = true;
+  DynamicJsonDocument doc(8192);
+  DeserializationError err = deserializeJson(doc, reinterpret_cast<const char*>(body), http.length,
+                                             DeserializationOption::Filter(filter));  // const: copies strings
+  heap_caps_free(body);
+  if (err) {
+    console_printf("Geocode JSON %s\n", err.c_str());
+    return -1;
+  }
+  int n = 0;
+  for (JsonObject r : doc["results"].as<JsonArray>()) {
+    if (n >= kMaxPlaces) break;
+    GeoPlace& p = out[n];
+    snprintf(p.name, sizeof(p.name), "%s", r["name"] | "?");
+    const char* a1 = r["admin1"] | "";
+    const char* cc = r["country_code"] | "";
+    snprintf(p.region, sizeof(p.region), "%s%s%s", a1, (a1[0] != '\0' && cc[0] != '\0') ? ", " : "", cc);
+    p.lat = r["latitude"] | 0.0f;
+    p.lon = r["longitude"] | 0.0f;
+    n++;
+  }
+  console_printf("Geocode \"%s\" -> %d results (%u bytes)\n", query, n, static_cast<unsigned>(http.length));
+  return n;
+}
 
 bool fetch_buchs_weather(int* temp_c, int* code, WeatherDay* days, int* week_count) {
   constexpr size_t kCap = 64 * 1024;
@@ -54,13 +117,15 @@ bool fetch_buchs_weather(int* temp_c, int* code, WeatherDay* days, int* week_cou
   if (payload == nullptr) {
     return false;
   }
-  const char* url =
-      "https://api.open-meteo.com/v1/forecast?latitude=47.3925&longitude=9.4728"
-      "&current=temperature_2m,weather_code"
-      "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,"
-      "sunrise,sunset,wind_speed_10m_max,precipitation_probability_max"
-      "&hourly=temperature_2m,precipitation,precipitation_probability,weather_code,wind_speed_10m,cloud_cover"
-      "&timezone=Europe%2FZurich&forecast_days=7";
+  char url[512];
+  snprintf(url, sizeof(url),
+           "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"
+           "&current=temperature_2m,weather_code"
+           "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,"
+           "sunrise,sunset,wind_speed_10m_max,precipitation_probability_max"
+           "&hourly=temperature_2m,precipitation,precipitation_probability,weather_code,wind_speed_10m,cloud_cover"
+           "&timezone=Europe%%2FZurich&forecast_days=7",
+           g_loc.lat, g_loc.lon);
   HttpGetResult http = http_get(url, nullptr, nullptr, payload, kCap, 10000);
   if (!http.ok || http.status != 200) {
     console_printf("Weather HTTP %d %s\n", http.status, http.error);
@@ -78,7 +143,8 @@ bool fetch_buchs_weather(int* temp_c, int* code, WeatherDay* days, int* week_cou
   for (const char* k : hkeys) filter["hourly"][k] = true;
   DynamicJsonDocument doc(24576);
   DeserializationError err =
-      deserializeJson(doc, payload, http.length, DeserializationOption::Filter(filter));
+      deserializeJson(doc, reinterpret_cast<const char*>(payload), http.length,
+                      DeserializationOption::Filter(filter));  // const input: strings are copied, payload can be freed
   heap_caps_free(payload);
   if (err) {
     console_printf("Weather JSON %s (%u bytes)\n", err.c_str(), static_cast<unsigned>(http.length));
@@ -167,7 +233,7 @@ const char* kNotConfiguredBody =
     "local Miniserver, then rebuild and\n"
     "flash over USB.\n\n"
     "Relay 1 stays off until you open\n"
-    "Sonstiges on the home screen\n"
+    "Schalter on the home screen\n"
     "and tap Relais.";
 
 
@@ -179,12 +245,13 @@ const char* kNotConfiguredBody =
 // res_q. Big results (controls, week) live in static storage that only the
 // network task writes before posting and only the UI task reads afterwards.
 
-enum class NetOp : uint8_t { Connect, Load, Command, State, Weather };
+enum class NetOp : uint8_t { Connect, Load, Command, State, Weather, Settings };
 
 struct NetRequest {
   NetOp op;
   LoxoneCommandRequest command;
   LoxoneStateRequest state;
+  SettingsRequest settings;
 };
 
 struct NetResult {
@@ -204,6 +271,10 @@ struct NetResult {
   int code;
   WeatherDay days[2];
   int week_count;
+  // Settings
+  uint8_t settings_kind;
+  int count;
+  Location location;
 };
 
 QueueHandle_t net_q = nullptr;
@@ -243,6 +314,57 @@ void net_load(NetResult* res) {
   res->ok = true;
 }
 
+void net_settings(const SettingsRequest& s, NetResult* res) {
+  res->settings_kind = s.kind;
+  switch (s.kind) {
+    case SettingsRequest::Scan:
+      res->count = wifi_scan(g_aps, kMaxAps);
+      res->ok = res->count > 0;
+      console_printf("Wi-Fi scan %d networks\n", res->count);
+      break;
+    case SettingsRequest::Connect: {
+      WifiCreds old;
+      bool have_old = settings_load_wifi(&old);
+      console_printf("Wi-Fi switching to \"%s\"\n", s.creds.ssid);
+      wifi_start(s.creds.ssid, s.creds.pass, "loxone-panel");
+      uint32_t t0 = now_ms();
+      while (!wifi_connected() && !(wifi_failed() && now_ms() - t0 > 3000) && now_ms() - t0 < 15000) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+      }
+      res->ok = wifi_connected();
+      snprintf(res->detail, sizeof(res->detail), "%s", s.creds.ssid);
+      if (res->ok) {
+        settings_save_wifi(s.creds);
+        console_printf("Wi-Fi \"%s\" connected and saved\n", s.creds.ssid);
+      } else if (have_old) {
+        console_printf("Wi-Fi \"%s\" failed, back to \"%s\"\n", s.creds.ssid, old.ssid);
+        wifi_start(old.ssid, old.pass, "loxone-panel");
+        t0 = now_ms();
+        while (!wifi_connected() && now_ms() - t0 < 15000) vTaskDelay(pdMS_TO_TICKS(100));
+      }
+      break;
+    }
+    case SettingsRequest::Geocode:
+      res->count = geocode(s.query, g_places);
+      res->ok = res->count >= 0;
+      if (res->count < 0) res->count = 0;
+      break;
+    case SettingsRequest::SetLocation:
+      g_loc = s.location;
+      res->ok = settings_save_location(g_loc);
+      res->location = g_loc;
+      console_printf("Location %s %.4f %.4f\n", g_loc.name, g_loc.lat, g_loc.lon);
+      break;
+    case SettingsRequest::ResetLocation:
+      settings_reset_location();
+      g_loc = settings_default_location();
+      res->ok = true;
+      res->location = g_loc;
+      console_printf("Location reset to %s\n", g_loc.name);
+      break;
+  }
+}
+
 void net_task(void*) {
   for (;;) {
     NetRequest req;
@@ -253,9 +375,15 @@ void net_task(void*) {
     memset(&res, 0, sizeof(res));
     res.op = req.op;
     switch (req.op) {
-      case NetOp::Connect:
-        wifi_start(WIFI_SSID, WIFI_PASSWORD, "loxone-panel");
+      case NetOp::Connect: {
+        WifiCreds creds;
+        settings_load_wifi(&creds);
+        wifi_start(creds.ssid, creds.pass, "loxone-panel");
         res.ok = true;
+        break;
+      }
+      case NetOp::Settings:
+        net_settings(req.settings, &res);
         break;
       case NetOp::Load:
         net_load(&res);
@@ -279,7 +407,7 @@ void net_task(void*) {
       }
       case NetOp::Weather:
         res.ok = fetch_buchs_weather(&res.temp_c, &res.code, res.days, &res.week_count);
-        console_printf("Weather Buchs %s\n", res.ok ? "ok" : "unavailable");
+        console_printf("Weather %s\n", res.ok ? "ok" : "unavailable");
         break;
     }
     xQueueSend(res_q, &res, portMAX_DELAY);
@@ -321,6 +449,27 @@ void handle_result(const NetResult& res) {
     case NetOp::State:
       ui_state_finished(res.index, res.ok, res.ok ? res.value : nullptr);
       break;
+    case NetOp::Settings:
+      switch (res.settings_kind) {
+        case SettingsRequest::Scan:
+          ui_wifi_scan_done(g_aps, res.count);
+          break;
+        case SettingsRequest::Connect:
+          ui_wifi_connect_done(res.ok, res.detail, wifi_ssid());
+          if (res.ok && phase == Phase::Failed) {  // changed from the Wi-Fi failed screen
+            phase = Phase::Wifi;
+            wifi_started_ms = now_ms();
+          }
+          break;
+        case SettingsRequest::Geocode:
+          ui_geocode_done(res.ok, g_places, res.count);
+          break;
+        default:
+          ui_location_done(res.ok, res.location.name);
+          next_weather_ms = now_ms();  // refresh the weather right away
+          break;
+      }
+      break;
     case NetOp::Weather:
       ui_set_weather(res.ok, res.temp_c, res.code);
       ui_set_forecast(res.ok, res.days, 2);
@@ -349,6 +498,7 @@ void poll() {
         console_printf("Wi-Fi connected, Miniserver %s:%d auth %s\n", LOXONE_HOST, LOXONE_PORT, auth->name());
         phase = Phase::Loading;
         load_painted = false;
+        ui_set_wifi_name(wifi_ssid());
         ui_set_status("Wi-Fi connected");
       } else if (wifi_failed() || now_ms() - wifi_started_ms > kWifiTimeoutMs) {
         phase = Phase::Failed;
@@ -372,7 +522,10 @@ void poll() {
         break;
       }
       NetRequest r = {};
-      if (ui_take_command(&r.command)) {
+      if (ui_take_settings(&r.settings)) {
+        r.op = NetOp::Settings;
+        net_post(r);
+      } else if (ui_take_command(&r.command)) {
         r.op = NetOp::Command;
         net_post(r);
       } else if (ui_take_state(&r.state)) {
@@ -384,7 +537,13 @@ void poll() {
       }
       break;
     }
-    case Phase::Failed:
+    case Phase::Failed: {
+      NetRequest r = {};
+      if (ui_take_settings(&r.settings)) {  // Wi-Fi can be changed while offline
+        r.op = NetOp::Settings;
+        net_post(r);
+        break;
+      }
       if (ui_take_retry()) {
         start_wifi();
         phase = Phase::Wifi;
@@ -392,6 +551,7 @@ void poll() {
         ui_set_status("Connecting to Wi-Fi");
       }
       break;
+    }
   }
 }
 
@@ -419,6 +579,7 @@ void ui_task(void*) {
   panel_touch_begin();
   if (!panel_lvgl_start()) halt("LVGL init failed");
   ui_init();
+  ui_set_place(g_loc.name);
 
   if (strcmp(LOXONE_AUTH, "basic") == 0) {
     auth = &basic_auth;
@@ -460,6 +621,7 @@ void ui_task(void*) {
 }  // namespace
 
 void app_start() {
+  g_loc = settings_load_location();
   net_q = xQueueCreate(2, sizeof(NetRequest));
   res_q = xQueueCreate(2, sizeof(NetResult));
   // Network and protocol work on core 0 (with the Wi-Fi stack), UI on core 1.

@@ -10,6 +10,8 @@
 #include <strings.h>
 
 #include "font_dejavu.h"
+#include "material_icons.h"
+#include "settings.h"
 #include "panel_hw.h"
 #include "weather_derive.h"
 #include <esp_heap_caps.h>
@@ -45,7 +47,7 @@ constexpr uint32_t kCyan = 0x5AC8F5;
 constexpr uint32_t kPurple = 0xBF5AF2;
 
 enum Section : uint8_t { kSecFav = 0, kSecLight = 1, kSecShutter = 2, kSecOther = 3 };
-enum class Nav : uint8_t { Home, Category, Weather };
+enum class Nav : uint8_t { Home, Category, Weather, Settings, WifiList, WifiPass, Location };
 
 const char* kShutterLabel[2] = {"Auf", "Ab"};
 const char* kShutterCommand[2] = {"FullUp", "FullDown"};
@@ -98,8 +100,64 @@ int wx_day = 0;
 lv_obj_t* fc_temp[2] = {nullptr, nullptr};
 lv_obj_t* fc_rain[2] = {nullptr, nullptr};
 bool fc_have = false;
-lv_obj_t* card_btn[4] = {};
-lv_obj_t* card_sub[4] = {};
+lv_obj_t* card_btn[5] = {};
+lv_obj_t* weather_place = nullptr;
+// Settings screens
+lv_obj_t* set_root = nullptr;
+lv_obj_t* set_wifi_val = nullptr;
+lv_obj_t* set_loc_val = nullptr;
+lv_obj_t* wl_root = nullptr;
+lv_obj_t* wl_list = nullptr;
+lv_obj_t* wl_status = nullptr;
+lv_obj_t* wp_root = nullptr;
+lv_obj_t* wp_title = nullptr;
+lv_obj_t* wp_ta = nullptr;
+lv_obj_t* wp_status = nullptr;
+lv_obj_t* loc_root = nullptr;
+lv_obj_t* loc_ta = nullptr;
+lv_obj_t* loc_list = nullptr;
+lv_obj_t* loc_status = nullptr;
+lv_obj_t* kb = nullptr;
+lv_obj_t* msg_wifi_btn = nullptr;
+WifiAp ui_aps[kMaxAps];
+int ui_ap_n = 0;
+bool wl_scanning = false;
+GeoPlace ui_places[kMaxPlaces];
+int ui_place_n = 0;
+bool loc_searching = false;
+bool wp_connecting = false;
+char wp_ssid[33] = "";
+char cur_ssid[33] = "";
+char cur_place[48] = "Buchs SG";
+SettingsRequest settings_req;
+bool settings_pending = false;
+
+// Named widgets for the test harness (POS <name> -> centre coordinates).
+struct Named {
+  char name[16];
+  lv_obj_t* obj;
+};
+Named named[48];
+int named_n = 0;
+void reg(const char* name, lv_obj_t* obj) {
+  for (int i = 0; i < named_n; ++i) {
+    if (strcmp(named[i].name, name) == 0) {
+      named[i].obj = obj;
+      return;
+    }
+  }
+  if (named_n < 48) {
+    snprintf(named[named_n].name, sizeof(named[named_n].name), "%s", name);
+    named[named_n].obj = obj;
+    named_n++;
+  }
+}
+void unreg_prefix(const char* prefix) {
+  size_t n = strlen(prefix);
+  for (int i = 0; i < named_n; ++i) {
+    if (strncmp(named[i].name, prefix, n) == 0) named[i].obj = nullptr;
+  }
+}
 lv_obj_t* cat_title = nullptr;
 lv_obj_t* cat_page = nullptr;
 lv_obj_t* prev_hint = nullptr;
@@ -199,7 +257,7 @@ const char* section_name(Section section) {
     case kSecShutter:
       return "Storen";
     default:
-      return "Sonstiges";
+      return "Schalter";
   }
 }
 
@@ -703,27 +761,7 @@ void show_shutter_row(int row_slot, int index) {
   lv_label_set_text(shutter_pos[row_slot], pos);
 }
 
-void fill_home_cards() {
-  for (int s = 0; s < 4; ++s) {
-    char text[32];
-    if (s == kSecOther) {
-      snprintf(text, sizeof(text), "Relais · %s", panel_relay_is_on() ? "An" : "Aus");
-    } else {
-      int count = 0;
-      for (size_t i = 0; i < control_count; ++i) {
-        if (section_of(controls[i]) == static_cast<Section>(s)) {
-          count++;
-        }
-      }
-      if (count == 0) {
-        snprintf(text, sizeof(text), "Leer");
-      } else {
-        snprintf(text, sizeof(text), "%d", count);
-      }
-    }
-    lv_label_set_text(card_sub[s], text);
-  }
-}
+void fill_home_cards() {}  // the home buttons show no counts any more
 
 void refresh_category() {
   if (section_pages[current_section] <= 0 || section_origin[current_section] < 0) {
@@ -790,12 +828,27 @@ void refresh_category() {
   }
 }
 
+void hide_settings() {
+  hide(set_root);
+  hide(wl_root);
+  hide(wp_root);
+  hide(loc_root);
+  if (kb != nullptr) {
+    lv_keyboard_set_textarea(kb, nullptr);
+    hide(kb);
+  }
+}
+
+void open_settings();
+void settings_back();
+
 void show_home() {
   nav = Nav::Home;
   page = -1;
   hide(cat_root);
   hide(wx_root);
   hide(message);
+  hide_settings();
   show(home_root);
   fill_home_cards();
   message_open = false;
@@ -834,6 +887,10 @@ void back_level() {
 void refresh_weather_day();
 
 void swipe_page(int dir) {
+  if (nav == Nav::WifiList || nav == Nav::WifiPass || nav == Nav::Location) {
+    if (dir < 0) settings_back();
+    return;
+  }
   if (nav == Nav::Weather) {
     int next = wx_day + dir;
     if (next >= 0 && next < wx_count) {
@@ -1026,6 +1083,11 @@ void on_category(lv_event_t* event) {
     return;
   }
   int which = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(event)));
+  if (which == 4) {
+    console_printf("Activate settings\n");
+    open_settings();
+    return;
+  }
   if (which < kSecFav || which > kSecOther) {
     return;
   }
@@ -1053,6 +1115,8 @@ void on_day_panel(lv_event_t* event) {
   console_printf("Activate weather day %d\n", day);
   open_weather_day(day);
 }
+
+void on_msg_wifi(lv_event_t*);
 
 void on_retry(lv_event_t*) {
   if (gesture_consumed) {
@@ -1352,6 +1416,319 @@ void refresh_weather_day() {
   if (wx_day + 1 < wx_count) show(wx_next_hint); else hide(wx_next_hint);
 }
 
+// --- Settings -------------------------------------------------------------
+// Einstellungen: WLAN (scan, pick, password, connect) and Wetter-Ort
+// (Open-Meteo geocoding). The network work runs in the net task; the UI only
+// queues one SettingsRequest (ui_take_settings) and gets ui_*_done back.
+
+lv_obj_t* make_screen_root(lv_obj_t* screen, const char* title) {
+  lv_obj_t* root = lv_obj_create(screen);
+  lv_obj_set_pos(root, 0, 0);
+  lv_obj_set_size(root, kScreen, kScreen);
+  style_plain(root);
+  lv_obj_t* t = make_label(root, &font_dejavu_20, lv_color_hex(kText));
+  lv_obj_set_pos(t, 24, 16);
+  lv_label_set_text(t, title);
+  lv_obj_t* home_hint = lv_obj_create(root);
+  lv_obj_set_pos(home_hint, 200, 468);
+  lv_obj_set_size(home_hint, 80, 5);
+  lv_obj_set_style_radius(home_hint, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(home_hint, lv_color_hex(kText), 0);
+  lv_obj_set_style_bg_opa(home_hint, LV_OPA_30, 0);
+  lv_obj_set_style_border_width(home_hint, 0, 0);
+  lv_obj_clear_flag(home_hint, LV_OBJ_FLAG_CLICKABLE);
+  hide(root);
+  return root;
+}
+
+lv_obj_t* make_list(lv_obj_t* parent, int y, int h) {
+  lv_obj_t* list = lv_obj_create(parent);
+  lv_obj_set_pos(list, kMargin, y);
+  lv_obj_set_size(list, kScreen - 2 * kMargin, h);
+  style_plain(list);
+  lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_row(list, 8, 0);
+  lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scroll_dir(list, LV_DIR_VER);
+  lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
+  return list;
+}
+
+lv_obj_t* make_row(lv_obj_t* parent, int h, const char* icon, uint32_t icon_color, lv_event_cb_t cb, int user) {
+  lv_obj_t* row = lv_btn_create(parent);
+  lv_obj_set_size(row, kScreen - 2 * kMargin, h);
+  style_glass(row, 18);
+  lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, reinterpret_cast<void*>(static_cast<intptr_t>(user)));
+  watch(row);
+  if (icon != nullptr) {
+    lv_obj_t* ic = make_label(row, &font_icons_24, lv_color_hex(icon_color));
+    lv_label_set_text(ic, icon);
+    lv_obj_align(ic, LV_ALIGN_LEFT_MID, 4, 0);
+  }
+  return row;
+}
+
+void show_keyboard(lv_obj_t* ta) {
+  lv_keyboard_set_textarea(kb, ta);
+  lv_keyboard_set_mode(kb, LV_KEYBOARD_MODE_TEXT_LOWER);
+  show(kb);
+  lv_obj_move_foreground(kb);
+}
+
+void queue_settings(const SettingsRequest& r) {
+  settings_req = r;
+  settings_pending = true;
+}
+
+void open_settings() {
+  if (message_open) return;
+  nav = Nav::Settings;
+  hide(home_root);
+  hide(cat_root);
+  hide(wx_root);
+  hide_settings();
+  lv_label_set_text(set_wifi_val, cur_ssid[0] != '\0' ? cur_ssid : "nicht verbunden");
+  lv_label_set_text(set_loc_val, cur_place);
+  show(set_root);
+}
+
+void settings_back() { open_settings(); }
+
+void on_wifi_row(lv_event_t* e);
+void on_loc_row(lv_event_t* e);
+
+void fill_wifi_list() {
+  unreg_prefix("wifi:");
+  lv_obj_clean(wl_list);
+  for (int i = 0; i < ui_ap_n; ++i) {
+    const WifiAp& ap = ui_aps[i];
+    const char* bars = ap.rssi >= -55 ? ICON_WIFI3 : ap.rssi >= -67 ? ICON_WIFI2 : ap.rssi >= -78 ? ICON_WIFI1 : ICON_WIFI0;
+    lv_obj_t* row = make_row(wl_list, 56, bars, kCyan, on_wifi_row, i);
+    lv_obj_t* name = make_label(row, &font_dejavu_20, lv_color_hex(kText));
+    lv_obj_set_width(name, 300);
+    lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+    lv_label_set_text(name, ap.ssid);
+    lv_obj_align(name, LV_ALIGN_LEFT_MID, 40, 0);
+    char info[24];
+    snprintf(info, sizeof(info), "%d dBm", ap.rssi);
+    lv_obj_t* dbm = make_label(row, &font_dejavu_14, lv_color_hex(kTextDim));
+    lv_label_set_text(dbm, info);
+    lv_obj_align(dbm, LV_ALIGN_RIGHT_MID, ap.secure ? -32 : -4, 0);
+    if (ap.secure || strcmp(ap.ssid, cur_ssid) == 0) {
+      lv_obj_t* ic = make_label(row, &font_icons_24, lv_color_hex(strcmp(ap.ssid, cur_ssid) == 0 ? kGreen : kTextDim));
+      lv_label_set_text(ic, strcmp(ap.ssid, cur_ssid) == 0 ? ICON_CHECK : ICON_LOCK);
+      lv_obj_align(ic, LV_ALIGN_RIGHT_MID, 0, 0);
+    }
+    char key[16];
+    snprintf(key, sizeof(key), "wifi:%d", i);
+    reg(key, row);
+  }
+}
+
+void open_wifi_list() {
+  nav = Nav::WifiList;
+  hide_settings();
+  show(wl_root);
+  ui_ap_n = 0;
+  unreg_prefix("wifi:");
+  lv_obj_clean(wl_list);
+  wl_scanning = true;
+  lv_label_set_text(wl_status, "Suche Netzwerke ...");
+  SettingsRequest r = {};
+  r.kind = SettingsRequest::Scan;
+  queue_settings(r);
+}
+
+void on_wifi_row(lv_event_t* e) {
+  if (gesture_consumed) return;
+  int i = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
+  if (i < 0 || i >= ui_ap_n) return;
+  console_printf("Activate wifi %d %s\n", i, ui_aps[i].ssid);
+  nav = Nav::WifiPass;
+  snprintf(wp_ssid, sizeof(wp_ssid), "%s", ui_aps[i].ssid);
+  hide_settings();
+  char t[64];
+  snprintf(t, sizeof(t), "WLAN: %s", wp_ssid);
+  lv_label_set_text(wp_title, t);
+  lv_textarea_set_text(wp_ta, "");
+  lv_label_set_text(wp_status, ui_aps[i].secure ? "Passwort eingeben, dann OK" : "Offenes Netz: OK zum Verbinden");
+  show(wp_root);
+  show_keyboard(wp_ta);
+}
+
+void on_wifi_ready(lv_event_t*) {
+  if (wp_connecting || settings_pending) return;
+  SettingsRequest r = {};
+  r.kind = SettingsRequest::Connect;
+  snprintf(r.creds.ssid, sizeof(r.creds.ssid), "%s", wp_ssid);
+  snprintf(r.creds.pass, sizeof(r.creds.pass), "%s", lv_textarea_get_text(wp_ta));
+  wp_connecting = true;
+  lv_label_set_text(wp_status, "Verbinde ...");
+  queue_settings(r);
+}
+
+void fill_loc_list() {
+  unreg_prefix("loc:");
+  lv_obj_clean(loc_list);
+  for (int i = 0; i < ui_place_n; ++i) {
+    lv_obj_t* row = make_row(loc_list, 64, ICON_PLACE, kOrange, on_loc_row, i);
+    lv_obj_t* name = make_label(row, &font_dejavu_20, lv_color_hex(kText));
+    lv_label_set_text(name, ui_places[i].name);
+    lv_obj_align(name, LV_ALIGN_TOP_LEFT, 40, 2);
+    lv_obj_t* reg_l = make_label(row, &font_dejavu_14, lv_color_hex(kTextDim));
+    lv_obj_set_width(reg_l, 360);
+    lv_label_set_long_mode(reg_l, LV_LABEL_LONG_DOT);
+    lv_label_set_text(reg_l, ui_places[i].region);
+    lv_obj_align(reg_l, LV_ALIGN_BOTTOM_LEFT, 40, -2);
+    char key[16];
+    snprintf(key, sizeof(key), "loc:%d", i);
+    reg(key, row);
+  }
+}
+
+void open_location() {
+  nav = Nav::Location;
+  hide_settings();
+  ui_place_n = 0;
+  unreg_prefix("loc:");
+  lv_obj_clean(loc_list);
+  lv_textarea_set_text(loc_ta, "");
+  lv_label_set_text(loc_status, "Ortsname eingeben, dann OK");
+  show(loc_root);
+  show_keyboard(loc_ta);
+}
+
+void on_loc_ready(lv_event_t*) {
+  const char* q = lv_textarea_get_text(loc_ta);
+  if (q[0] == '\0' || settings_pending || loc_searching) return;
+  SettingsRequest r = {};
+  r.kind = SettingsRequest::Geocode;
+  snprintf(r.query, sizeof(r.query), "%s", q);
+  loc_searching = true;
+  lv_label_set_text(loc_status, "Suche ...");
+  lv_keyboard_set_textarea(kb, nullptr);
+  hide(kb);
+  queue_settings(r);
+}
+
+void on_loc_row(lv_event_t* e) {
+  if (gesture_consumed || settings_pending) return;
+  int i = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
+  if (i < 0 || i >= ui_place_n) return;
+  console_printf("Activate location %d %s\n", i, ui_places[i].name);
+  SettingsRequest r = {};
+  r.kind = SettingsRequest::SetLocation;
+  snprintf(r.location.name, sizeof(r.location.name), "%s", ui_places[i].name);
+  r.location.lat = ui_places[i].lat;
+  r.location.lon = ui_places[i].lon;
+  lv_label_set_text(loc_status, "Speichere ...");
+  queue_settings(r);
+}
+
+void on_kb_event(lv_event_t* e) {
+  lv_event_code_t code = lv_event_get_code(e);
+  lv_obj_t* ta = lv_keyboard_get_textarea(kb);
+  if (code == LV_EVENT_READY) {
+    if (ta == wp_ta) on_wifi_ready(e);
+    if (ta == loc_ta) on_loc_ready(e);
+  } else if (code == LV_EVENT_CANCEL) {
+    lv_keyboard_set_textarea(kb, nullptr);
+    hide(kb);
+  }
+}
+
+void on_ta_click(lv_event_t* e) {
+  if (gesture_consumed) return;
+  show_keyboard(lv_event_get_target(e));
+}
+
+void on_settings_row(lv_event_t* e) {
+  if (gesture_consumed) return;
+  int which = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
+  console_printf("Activate settings row %d\n", which);
+  if (which == 0) open_wifi_list();
+  if (which == 1) open_location();
+}
+
+void on_msg_wifi(lv_event_t*) {
+  if (gesture_consumed) return;
+  message_open = false;
+  hide(message);
+  hide(msg_status);
+  open_settings();
+  open_wifi_list();
+}
+
+lv_obj_t* make_ta(lv_obj_t* parent, int y, const char* placeholder) {
+  lv_obj_t* ta = lv_textarea_create(parent);
+  lv_obj_set_pos(ta, kMargin, y);
+  lv_obj_set_size(ta, kScreen - 2 * kMargin, 52);
+  lv_textarea_set_one_line(ta, true);
+  lv_textarea_set_placeholder_text(ta, placeholder);
+  lv_obj_set_style_text_font(ta, &font_dejavu_20, 0);
+  lv_obj_add_event_cb(ta, on_ta_click, LV_EVENT_CLICKED, nullptr);
+  return ta;
+}
+
+void build_settings_screens(lv_obj_t* screen) {
+  set_root = make_screen_root(screen, "Einstellungen");
+  const char* names[2] = {"WLAN", "Wetter-Ort"};
+  const char* icons[2] = {ICON_WIFI3, ICON_PLACE};
+  const uint32_t colors[2] = {kCyan, kOrange};
+  lv_obj_t** vals[2] = {&set_wifi_val, &set_loc_val};
+  const char* keys[2] = {"set:wifi", "set:loc"};
+  for (int i = 0; i < 2; ++i) {
+    lv_obj_t* row = make_row(set_root, 88, icons[i], colors[i], on_settings_row, i);
+    lv_obj_set_pos(row, kMargin, 70 + i * 104);
+    reg(keys[i], row);
+    lv_obj_t* name = make_label(row, &font_dejavu_20, lv_color_hex(kText));
+    lv_label_set_text(name, names[i]);
+    lv_obj_align(name, LV_ALIGN_TOP_LEFT, 44, 8);
+    *vals[i] = make_label(row, &font_dejavu_14, lv_color_hex(kTextDim));
+    lv_obj_set_width(*vals[i], 320);
+    lv_label_set_long_mode(*vals[i], LV_LABEL_LONG_DOT);
+    lv_obj_align(*vals[i], LV_ALIGN_BOTTOM_LEFT, 44, -8);
+    lv_obj_t* chev = make_label(row, &font_icons_24, lv_color_hex(kTextDim));
+    lv_label_set_text(chev, ICON_CHEVRON);
+    lv_obj_align(chev, LV_ALIGN_RIGHT_MID, 0, 0);
+  }
+
+  wl_root = make_screen_root(screen, "WLAN");
+  wl_status = make_label(wl_root, &font_dejavu_14, lv_color_hex(kTextDim));
+  lv_obj_set_pos(wl_status, 24, 48);
+  wl_list = make_list(wl_root, 76, 380);
+
+  wp_root = make_screen_root(screen, "WLAN");
+  wp_title = lv_obj_get_child(wp_root, 0);
+  wp_ta = make_ta(wp_root, 56, "Passwort");
+  lv_textarea_set_password_mode(wp_ta, true);
+  lv_textarea_set_password_bullet(wp_ta, "*");
+  wp_status = make_label(wp_root, &font_dejavu_14, lv_color_hex(kTextDim));
+  lv_obj_set_pos(wp_status, 24, 118);
+  lv_obj_set_width(wp_status, 432);
+  lv_label_set_long_mode(wp_status, LV_LABEL_LONG_WRAP);
+
+  loc_root = make_screen_root(screen, "Wetter-Ort");
+  loc_ta = make_ta(loc_root, 56, "Ort suchen");
+  loc_status = make_label(loc_root, &font_dejavu_14, lv_color_hex(kTextDim));
+  lv_obj_set_pos(loc_status, 24, 116);
+  loc_list = make_list(loc_root, 140, 316);
+
+  kb = lv_keyboard_create(screen);
+  lv_obj_set_size(kb, kScreen, 220);
+  lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, -10);
+  lv_obj_set_style_text_font(kb, &lv_font_montserrat_16, 0);
+  lv_obj_add_event_cb(kb, on_kb_event, LV_EVENT_ALL, nullptr);
+  hide(kb);
+}
+
+bool obj_visible(lv_obj_t* o) {
+  for (; o != nullptr; o = lv_obj_get_parent(o)) {
+    if (lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN)) return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 void ui_set_week(const WeatherDetailDay* days, int count) {
@@ -1375,6 +1752,14 @@ void ui_describe(char* out, size_t n) {
     snprintf(out, n, "home");
   } else if (nav == Nav::Weather) {
     snprintf(out, n, "weather %d/%d", wx_day + 1, wx_count);
+  } else if (nav == Nav::Settings) {
+    snprintf(out, n, "settings");
+  } else if (nav == Nav::WifiList) {
+    snprintf(out, n, "wifi %d scanning=%d", ui_ap_n, wl_scanning ? 1 : 0);
+  } else if (nav == Nav::WifiPass) {
+    snprintf(out, n, "wifipass connecting=%d", wp_connecting ? 1 : 0);
+  } else if (nav == Nav::Location) {
+    snprintf(out, n, "location %d searching=%d", ui_place_n, (loc_searching || settings_pending) ? 1 : 0);
   } else {
     snprintf(out, n, "category %s %d/%d", section_name(current_section), section_page + 1,
              section_pages[current_section]);
@@ -1434,9 +1819,11 @@ void ui_init() {
   style_glass(weather, 28);
   lv_obj_clear_flag(weather, LV_OBJ_FLAG_CLICKABLE);
 
-  lv_obj_t* place = make_label(weather, &font_dejavu_20, lv_color_hex(kTextDim));
-  lv_obj_set_pos(place, 22, 18);
-  lv_label_set_text(place, "Buchs");
+  weather_place = make_label(weather, &font_dejavu_20, lv_color_hex(kTextDim));
+  lv_obj_set_pos(weather_place, 22, 18);
+  lv_obj_set_width(weather_place, 132);
+  lv_label_set_long_mode(weather_place, LV_LABEL_LONG_DOT);
+  lv_label_set_text(weather_place, "Buchs SG");
 
   weather_temp = make_label(weather, &lv_font_montserrat_28, lv_color_hex(kText));
   lv_obj_set_pos(weather_temp, 22, 58);
@@ -1468,6 +1855,7 @@ void ui_init() {
     lv_obj_set_style_bg_opa(panel, LV_OPA_30, LV_STATE_PRESSED);
     lv_obj_add_event_cb(panel, on_day_panel, LV_EVENT_CLICKED, reinterpret_cast<void*>(static_cast<intptr_t>(d)));
     watch(panel);
+    reg(d == 0 ? "day:0" : "day:1", panel);
 
     lv_obj_t* name = make_label(panel, &font_dejavu_14, lv_color_hex(kTextDim));
     lv_label_set_text(name, kDayName[d]);
@@ -1489,36 +1877,41 @@ void ui_init() {
     lv_obj_align(fc_rain[d], LV_ALIGN_TOP_MID, 0, 122);
   }
 
-  const int card_x[2] = {20, 246};
-  const int card_y[2] = {214, 340};
-  for (int i = 0; i < 4; ++i) {
-    int col = i % 2;
-    int row = i / 2;
+  // Category buttons: Material Symbols icon with a German label, no counts.
+  // Row 1: Favoriten, Licht, Storen. Row 2 (centred): Schalter, Einstellungen.
+  struct HomeButton {
+    const char* icon;
+    const char* label;
+    const char* name;
+    uint32_t color;
+    int x;
+    int y;
+  };
+  static const HomeButton kButtons[5] = {
+      {ICON_STAR, "Favoriten", "cat:fav", kYellow, 20, 222},
+      {ICON_BULB, "Licht", "cat:licht", kOrange, 172, 222},
+      {ICON_BLINDS, "Storen", "cat:storen", kCyan, 324, 222},
+      {ICON_TOGGLE, "Schalter", "cat:schalter", kPurple, 96, 350},
+      {ICON_SETTINGS, "Einstellungen", "cat:settings", kTextDim, 248, 350},
+  };
+  for (int i = 0; i < 5; ++i) {
+    const HomeButton& b = kButtons[i];
     lv_obj_t* btn = lv_btn_create(home_root);
-    lv_obj_set_pos(btn, card_x[col], card_y[row]);
-    lv_obj_set_size(btn, 214, 112);
+    lv_obj_set_pos(btn, b.x, b.y);
+    lv_obj_set_size(btn, 136, 112);
     style_glass(btn, 24);
     lv_obj_add_event_cb(btn, on_category, LV_EVENT_CLICKED, reinterpret_cast<void*>(static_cast<intptr_t>(i)));
     watch(btn);
+    reg(b.name, btn);
     card_btn[i] = btn;
 
-    lv_obj_t* dot = lv_obj_create(btn);
-    lv_obj_set_pos(dot, 18, 22);
-    lv_obj_set_size(dot, 14, 14);
-    lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(dot, lv_color_hex(kSectionAccent[i]), 0);
-    lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(dot, 0, 0);
-    lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t* icon = make_label(btn, &font_icons_44, lv_color_hex(b.color));
+    lv_label_set_text(icon, b.icon);
+    lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 12);
 
-    lv_obj_t* name = make_label(btn, &font_dejavu_20, lv_color_hex(kText));
-    lv_obj_set_pos(name, 44, 16);
-    lv_label_set_text(name, section_name(static_cast<Section>(i)));
-
-    card_sub[i] = make_label(btn, &font_dejavu_14, lv_color_hex(kTextDim));
-    lv_obj_set_pos(card_sub[i], 18, 64);
-    lv_label_set_text(card_sub[i], "");
+    lv_obj_t* name = make_label(btn, &font_dejavu_14, lv_color_hex(kText));
+    lv_label_set_text(name, b.label);
+    lv_obj_align(name, LV_ALIGN_BOTTOM_MID, 0, -14);
   }
 
   cat_root = lv_obj_create(screen);
@@ -1670,9 +2063,21 @@ void ui_init() {
   lv_label_set_long_mode(message_body, LV_LABEL_LONG_WRAP);
   lv_obj_align(message_body, LV_ALIGN_TOP_LEFT, 20, 80);
 
+  msg_wifi_btn = lv_btn_create(message);
+  lv_obj_set_size(msg_wifi_btn, 188, 80);
+  lv_obj_align(msg_wifi_btn, LV_ALIGN_BOTTOM_LEFT, 4, -16);
+  style_glass(msg_wifi_btn, 20);
+  lv_obj_add_event_cb(msg_wifi_btn, on_msg_wifi, LV_EVENT_CLICKED, nullptr);
+  watch(msg_wifi_btn);
+  reg("msg:wifi", msg_wifi_btn);
+  lv_obj_t* wifi_label = make_label(msg_wifi_btn, &font_dejavu_20, lv_color_hex(kText));
+  lv_label_set_text(wifi_label, "WLAN");
+  lv_obj_center(wifi_label);
+
   retry_btn = lv_btn_create(message);
-  lv_obj_set_size(retry_btn, 392, 80);
-  lv_obj_align(retry_btn, LV_ALIGN_BOTTOM_MID, 0, -16);
+  lv_obj_set_size(retry_btn, 188, 80);
+  lv_obj_align(retry_btn, LV_ALIGN_BOTTOM_RIGHT, -4, -16);
+  reg("msg:retry", retry_btn);
   style_glass(retry_btn, 20);
   lv_obj_set_style_bg_color(retry_btn, lv_color_hex(kGreen), 0);
   lv_obj_set_style_bg_opa(retry_btn, LV_OPA_50, 0);
@@ -1683,6 +2088,7 @@ void ui_init() {
   lv_obj_center(retry_label);
   hide(message);
   hide(home_root);
+  build_settings_screens(screen);
 }
 
 void ui_show_message(const char* title, const char* body, bool retry) {
@@ -1690,9 +2096,12 @@ void ui_show_message(const char* title, const char* body, bool retry) {
   lv_label_set_text(message_body, body != nullptr ? body : "");
   if (retry) {
     show(retry_btn);
+    show(msg_wifi_btn);
   } else {
     hide(retry_btn);
+    hide(msg_wifi_btn);
   }
+  hide_settings();
   message_open = true;
   hide(home_root);
   hide(cat_root);
@@ -1722,7 +2131,7 @@ void ui_show_controls(const LoxoneControl* items, size_t count, size_t supported
     needs_read[i] = has_status(controls[i]);
   }
   rebuild_pages();
-  console_printf("Home categories ready, Sonstiges pages %d\n", section_pages[kSecOther]);
+  console_printf("Home categories ready, Schalter pages %d\n", section_pages[kSecOther]);
   hide(msg_status);
   show_home();
   ui_set_status(server_name);
@@ -1870,4 +2279,101 @@ void ui_state_finished(int index, bool ok, const char* value) {
   }
   publish_status();
   refresh_visible();
+}
+
+// --- Settings API (UI task) --------------------------------------------------
+
+bool ui_take_settings(SettingsRequest* out) {
+  if (!settings_pending) return false;
+  *out = settings_req;
+  settings_pending = false;
+  return true;
+}
+
+void ui_wifi_scan_done(const WifiAp* aps, int n) {
+  ui_ap_n = n < 0 ? 0 : (n > kMaxAps ? kMaxAps : n);
+  memcpy(ui_aps, aps, sizeof(WifiAp) * ui_ap_n);
+  wl_scanning = false;
+  if (nav != Nav::WifiList) return;
+  char t[48];
+  snprintf(t, sizeof(t), ui_ap_n > 0 ? "%d Netzwerke" : "Keine Netzwerke gefunden", ui_ap_n);
+  lv_label_set_text(wl_status, t);
+  fill_wifi_list();
+}
+
+void ui_wifi_connect_done(bool ok, const char* ssid, const char* current) {
+  wp_connecting = false;
+  snprintf(cur_ssid, sizeof(cur_ssid), "%s", current != nullptr ? current : "");
+  if (nav != Nav::WifiPass) return;
+  if (ok) {
+    open_settings();
+  } else {
+    char t[120];
+    snprintf(t, sizeof(t), "Verbindung zu %s fehlgeschlagen. Wieder mit %s verbunden.", ssid, cur_ssid);
+    lv_label_set_text(wp_status, t);
+  }
+}
+
+void ui_geocode_done(bool ok, const GeoPlace* places, int n) {
+  loc_searching = false;
+  ui_place_n = n < 0 ? 0 : (n > kMaxPlaces ? kMaxPlaces : n);
+  memcpy(ui_places, places, sizeof(GeoPlace) * ui_place_n);
+  if (nav != Nav::Location) return;
+  lv_label_set_text(loc_status, !ok ? "Suche fehlgeschlagen" : ui_place_n == 0 ? "Kein Ort gefunden" : "Ort antippen");
+  fill_loc_list();
+}
+
+void ui_set_place(const char* name) {
+  snprintf(cur_place, sizeof(cur_place), "%s", name != nullptr ? name : "");
+  if (weather_place != nullptr) lv_label_set_text(weather_place, cur_place);
+}
+
+void ui_location_done(bool ok, const char* name) {
+  ui_set_place(name);
+  if (nav == Nav::Location || nav == Nav::Settings) open_settings();
+}
+
+void ui_set_wifi_name(const char* ssid) { snprintf(cur_ssid, sizeof(cur_ssid), "%s", ssid != nullptr ? ssid : ""); }
+
+bool ui_find(const char* name, int* x, int* y) {
+  for (int i = 0; i < named_n; ++i) {
+    if (strcmp(named[i].name, name) == 0 && named[i].obj != nullptr && obj_visible(named[i].obj)) {
+      lv_area_t a;
+      lv_obj_get_coords(named[i].obj, &a);
+      *x = (a.x1 + a.x2) / 2;
+      *y = (a.y1 + a.y2) / 2;
+      return true;
+    }
+  }
+  return false;
+}
+
+void ui_list_dump() {
+  if (nav == Nav::WifiList) {
+    for (int i = 0; i < ui_ap_n; ++i) console_printf("ITEM %d %d %s\n", i, ui_aps[i].rssi, ui_aps[i].ssid);
+  } else if (nav == Nav::Location) {
+    for (int i = 0; i < ui_place_n; ++i)
+      console_printf("ITEM %d %.4f,%.4f %s|%s\n", i, ui_places[i].lat, ui_places[i].lon, ui_places[i].name,
+                     ui_places[i].region);
+  }
+  console_printf("%s", "ITEM_END\n");
+}
+
+bool ui_type(const char* text) {
+  lv_obj_t* ta = kb != nullptr ? lv_keyboard_get_textarea(kb) : nullptr;
+  if (ta == nullptr) return false;
+  lv_textarea_add_text(ta, text);
+  return true;
+}
+
+bool ui_enter() {
+  if (kb == nullptr || lv_keyboard_get_textarea(kb) == nullptr) return false;
+  lv_event_send(kb, LV_EVENT_READY, nullptr);
+  return true;
+}
+
+void ui_reset_location() {
+  SettingsRequest r = {};
+  r.kind = SettingsRequest::ResetLocation;
+  queue_settings(r);
 }

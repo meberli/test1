@@ -46,7 +46,7 @@ class Panel:
             if i >= 0:
                 line = bytes(self.rx[:i])
                 del self.rx[:i + 1]
-                return line.rstrip(b"\r").decode("ascii", "replace")
+                return line.rstrip(b"\r").decode("utf-8", "replace")
             if time.time() >= deadline:
                 raise TimeoutError("no reply")
             self.rx += self.s.read(max(1, self.s.in_waiting))
@@ -62,6 +62,24 @@ class Panel:
                 return line
             if line:
                 print("  log:", line)
+
+    def pos(self, name):
+        """Centre of a named, visible widget (harness POS), e.g. 'cat:licht'."""
+        line = self.cmd(f"POS {name}", expect=("POS", "ERR"))
+        _, x, y = line.split()
+        return int(x), int(y)
+
+    def items(self):
+        """ITEM lines of the open Wi-Fi or location list (harness LIST)."""
+        self.s.write(b"LIST\n")
+        deadline = time.time() + 3
+        out = []
+        while True:
+            line = self._line(deadline)
+            if line == "ITEM_END":
+                return out
+            if line.startswith("ITEM "):
+                out.append(line[5:])
 
     def ping(self):
         return self.cmd("PING")
@@ -153,8 +171,13 @@ def rgb565_to_rgb888(data):
     return bytes(out)
 
 
-# Home cards: lv_obj_set_pos(card_x[col], card_y[row]), 214x112 (panel_ui.cpp).
-CARDS = [("favoriten", 127, 270), ("licht", 353, 270), ("storen", 127, 396), ("sonstiges", 353, 396)]
+# Home category buttons by harness name (positions come from POS, not constants).
+CARD_NAMES = [("favoriten", "cat:fav"), ("licht", "cat:licht"), ("storen", "cat:storen"), ("schalter", "cat:schalter")]
+
+
+def cards(p):
+    """[(name, x, y)] of the home category buttons; the home screen must be open."""
+    return [(name, *p.pos(key)) for name, key in CARD_NAMES]
 
 
 def back(p):
@@ -166,7 +189,7 @@ def smoke(p, out):
     os.makedirs(out, exist_ok=True)
     print(p.ping())
     p.shot(os.path.join(out, "00_home.png"))
-    for i, (name, x, y) in enumerate(CARDS, 1):
+    for i, (name, x, y) in enumerate(cards(p), 1):
         p.tap(x, y)
         time.sleep(1.5)
         p.shot(os.path.join(out, f"{i:02d}_{name}.png"))

@@ -53,30 +53,6 @@ bool code_is_200(JsonVariant code) {
   return false;
 }
 
-bool copy_scalar(JsonVariant value, char* out, size_t out_n) {
-  if (out == nullptr || out_n == 0) {
-    return false;
-  }
-  out[0] = '\0';
-  if (value.is<const char*>()) {
-    snprintf(out, out_n, "%s", value.as<const char*>());
-    return true;
-  }
-  if (value.is<bool>()) {
-    snprintf(out, out_n, "%d", value.as<bool>() ? 1 : 0);
-    return true;
-  }
-  if (value.is<int>() || value.is<long>()) {
-    snprintf(out, out_n, "%ld", static_cast<long>(value.as<long>()));
-    return true;
-  }
-  if (value.is<float>()) {
-    snprintf(out, out_n, "%.4f", value.as<float>());
-    return true;
-  }
-  return false;
-}
-
 }  // namespace
 
 LoxoneHttpResult loxone_get(LoxoneAuthorizer& auth, const char* path, uint8_t* body, size_t cap,

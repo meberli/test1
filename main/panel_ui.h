@@ -3,6 +3,7 @@
 #include <stddef.h>
 
 #include "loxone_types.h"
+#include "settings.h"
 
 struct LoxoneCommandRequest {
   char action[40];
@@ -74,3 +75,20 @@ struct WeatherDetailDay {
 };
 // days must stay valid only for the call; the UI copies what it needs.
 void ui_set_week(const WeatherDetailDay* days, int count);
+
+// --- Settings (Einstellungen) ---
+bool ui_take_settings(SettingsRequest* out);
+void ui_wifi_scan_done(const WifiAp* aps, int n);
+// current = SSID the panel uses now (the new one, or the old one after a failure).
+void ui_wifi_connect_done(bool ok, const char* ssid, const char* current);
+void ui_geocode_done(bool ok, const GeoPlace* places, int n);
+void ui_location_done(bool ok, const char* name);
+void ui_set_place(const char* name);
+void ui_set_wifi_name(const char* ssid);
+
+// Test harness helpers.
+bool ui_find(const char* name, int* x, int* y);  // visible named widget centre
+void ui_list_dump();                             // ITEM lines for the open list
+bool ui_type(const char* text);                  // into the keyboard's text area
+bool ui_enter();                                 // keyboard OK
+void ui_reset_location();                        // back to Buchs SG (NVS erase)

@@ -133,7 +133,8 @@ bool rgb_begin() {
   c.timings.flags.pclk_active_neg = 0;
   c.timings.flags.pclk_idle_high = 0;
   c.data_width = 16;
-  c.bits_per_pixel = 16;
+  c.in_color_format = LCD_COLOR_FMT_RGB565;
+  c.out_color_format = LCD_COLOR_FMT_RGB565;
   c.num_fbs = 1;
   c.bounce_buffer_size_px = kPanelWidth * 10;  // 2 x 10 lines in internal DRAM
   c.dma_burst_size = 64;

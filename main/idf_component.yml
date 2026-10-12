@@ -1,4 +1,4 @@
 ## Component Manager dependencies (downloaded into managed_components/).
 dependencies:
-  idf: ">=5.5,<6"
+  idf: ">=6.1,<7"
   lvgl/lvgl: "~8.4.0"

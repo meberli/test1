@@ -5,7 +5,7 @@ alwaysApply: true
 
 # ESP32-S3 / ESP-IDF project rules
 
-- Native ESP-IDF v5.x only, target ESP32-S3.
+- Native ESP-IDF v6.x only (tested with v6.1), target ESP32-S3.
 - Language: C11 or C++17/20, written with embedded safety in mind (no unbounded
   allocation in hot paths, check every esp_err_t, bounded buffers).
 - FORBIDDEN: any Arduino API (Serial.print, delay(), digitalWrite, setup()/loop(), ...).

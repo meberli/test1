@@ -13,6 +13,7 @@ namespace {
 volatile bool g_connected = false;
 volatile bool g_failed = false;
 esp_netif_t* g_netif = nullptr;
+char g_ssid[33] = "";
 
 void on_event(void*, esp_event_base_t base, int32_t id, void* data) {
   if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
@@ -48,6 +49,7 @@ void wifi_start(const char* ssid, const char* password, const char* hostname) {
   }
   g_connected = false;
   g_failed = false;
+  snprintf(g_ssid, sizeof(g_ssid), "%s", ssid);
   wifi_config_t wc = {};
   snprintf(reinterpret_cast<char*>(wc.sta.ssid), sizeof(wc.sta.ssid), "%s", ssid);
   snprintf(reinterpret_cast<char*>(wc.sta.password), sizeof(wc.sta.password), "%s", password);
@@ -128,4 +130,34 @@ HttpGetResult http_get(const char* url, const char* user, const char* password, 
   }
   r.ok = true;
   return r;
+}
+
+const char* wifi_ssid() { return g_ssid; }
+
+int wifi_scan(WifiAp* out, int cap) {
+  wifi_scan_config_t sc = {};
+  sc.show_hidden = false;
+  if (esp_wifi_scan_start(&sc, true) != ESP_OK) {
+    return 0;
+  }
+  uint16_t num = 32;
+  static wifi_ap_record_t recs[32];
+  if (esp_wifi_scan_get_ap_records(&num, recs) != ESP_OK) {
+    return 0;
+  }
+  int n = 0;
+  for (int i = 0; i < num && n < cap; ++i) {  // records come sorted by RSSI
+    const char* ssid = reinterpret_cast<const char*>(recs[i].ssid);
+    if (ssid[0] == '\0') continue;
+    bool dup = false;
+    for (int j = 0; j < n; ++j) {
+      if (strcmp(out[j].ssid, ssid) == 0) dup = true;
+    }
+    if (dup) continue;
+    snprintf(out[n].ssid, sizeof(out[n].ssid), "%s", ssid);
+    out[n].rssi = recs[i].rssi;
+    out[n].secure = recs[i].authmode != WIFI_AUTH_OPEN;
+    n++;
+  }
+  return n;
 }

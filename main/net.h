@@ -4,10 +4,17 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "settings.h"
+
 void wifi_start(const char* ssid, const char* password, const char* hostname);
 bool wifi_connected();
 // true once the driver reported a final failure (wrong password, no AP).
 bool wifi_failed();
+// Blocking scan (call from the network task). Returns the number of APs,
+// strongest first, duplicates merged.
+int wifi_scan(WifiAp* out, int cap);
+// SSID of the configured network.
+const char* wifi_ssid();
 
 struct HttpGetResult {
   bool ok;         // transport ok and the whole body fit into the buffer

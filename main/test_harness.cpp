@@ -163,6 +163,22 @@ void handle(char* cmd) {
   } else if (sscanf(cmd, "SWIPE %d %d %d %d %d", &a, &b, &c, &d, &e) == 5) {
     start_move(a, b, c, d, static_cast<uint32_t>(e < 1 ? 1 : e), true);
     console_puts("OK");
+  } else if (strncmp(cmd, "POS ", 4) == 0) {
+    int x = 0, y = 0;
+    if (ui_find(cmd + 4, &x, &y)) {
+      console_printf("POS %d %d\n", x, y);
+    } else {
+      console_puts("ERR not visible");
+    }
+  } else if (strcmp(cmd, "LIST") == 0) {
+    ui_list_dump();
+  } else if (strncmp(cmd, "TYPE ", 5) == 0) {
+    console_puts(ui_type(cmd + 5) ? "OK" : "ERR no text field");
+  } else if (strcmp(cmd, "ENTER") == 0) {
+    console_puts(ui_enter() ? "OK" : "ERR no text field");
+  } else if (strcmp(cmd, "LOCRESET") == 0) {
+    ui_reset_location();
+    console_puts("OK");
   } else if (cmd[0] != '\0') {
     console_puts("ERR unknown");
   }
