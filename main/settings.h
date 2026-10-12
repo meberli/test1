@@ -68,11 +68,40 @@ TimeSettings settings_default_time();
 TimeSettings settings_load_time();  // NVS first, else the default
 bool settings_save_time(const TimeSettings& t);
 
+// Webcams (Kameras): only the Windy webcam IDs are stored in NVS. title is
+// RAM only (built-in names for the defaults, else filled from the API).
+struct Webcam {
+  uint32_t id;
+  char title[64];
+};
+constexpr int kMaxCams = 12;
+// NVS (IDs) first, else the five default cameras around Buchs SG. Returns the count.
+int settings_load_cams(Webcam* out, int cap);
+bool settings_save_cams(const Webcam* cams, int n);
+
+// Windy Webcams API key: the user's own key from NVS, else the build default
+// (CONFIG_PANEL_WINDY_API_KEY from the gitignored sdkconfig.defaults.local).
+// own = true when the key came from NVS. Returns false if there is no key.
+bool settings_load_windy_key(char* out, size_t n, bool* own);
+bool settings_save_windy_key(const char* key);  // "" erases the own key
+// "abcd••••wxyz" for display (never the whole key).
+void settings_mask_key(const char* key, char* out, size_t n);
+
 // Requests from the settings screens to the network task.
 struct SettingsRequest {
-  enum Kind : uint8_t { Scan, Connect, Geocode, SetLocation, ResetLocation, SetTime } kind;
+  enum Kind : uint8_t {
+    Scan, Connect, Geocode, SetLocation, ResetLocation, SetTime,
+    CamLookup,    // cam_id -> title (verifies the ID)
+    CamNearby,    // query: place name -> geocode -> webcams nearby
+    SetCams,      // cams/cam_n -> NVS
+    SetWindyKey,  // key ("" = back to the build default) -> NVS
+  } kind;
   WifiCreds creds;
   char query[48];
   Location location;
   TimeSettings time;
+  uint32_t cam_id;
+  int cam_n;
+  Webcam cams[kMaxCams];
+  char key[72];
 };

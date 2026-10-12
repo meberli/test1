@@ -64,7 +64,7 @@ bool wifi_connected() { return g_connected; }
 bool wifi_failed() { return g_failed; }
 
 HttpGetResult http_get(const char* url, const char* user, const char* password, uint8_t* body, size_t cap,
-                       int timeout_ms) {
+                       int timeout_ms, const char* hdr_name, const char* hdr_value) {
   HttpGetResult r = {};
   esp_http_client_config_t cfg = {};
   cfg.url = url;
@@ -83,6 +83,9 @@ HttpGetResult http_get(const char* url, const char* user, const char* password, 
   if (c == nullptr) {
     snprintf(r.error, sizeof(r.error), "client init failed");
     return r;
+  }
+  if (hdr_name != nullptr && hdr_value != nullptr) {
+    esp_http_client_set_header(c, hdr_name, hdr_value);
   }
   esp_err_t err = esp_http_client_open(c, 0);
   if (err != ESP_OK) {

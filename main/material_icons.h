@@ -9,7 +9,9 @@
 //   font_icons_24: weather glyphs, water_drop, air, wb_twilight, wifi bars,
 //                  lock, location_on, search, check, chevron_right, bedtime,
 //                  schedule, lightbulb, blinds_2, toggle_on, star,
-//                  keyboard_arrow_up, public, desktop_windows
+//                  keyboard_arrow_up, public, desktop_windows, videocam,
+//                  add, delete, key
+//   font_icons_38 also: videocam
 //   font_icons_16: water_drop, air, wb_twilight, nights_stay, bedtime
 // Material Symbols: Copyright Google LLC, Apache License 2.0
 // (https://github.com/google/material-design-icons/blob/master/LICENSE).
@@ -48,6 +50,10 @@ LV_FONT_DECLARE(font_icons_16)
 #define ICON_AIR "\xEE\xBF\x98"           // U+EFD8
 #define ICON_SUNRISE "\xEE\x87\x86"       // U+E1C6 wb_twilight
 #define ICON_SUNSET "\xEF\x85\xB4"        // U+F174 nights_stay
+#define ICON_VIDEOCAM "\xEE\x81\x8B"     // U+E04B (38, 24)
+#define ICON_ADD "\xEE\x85\x85"          // U+E145 (24)
+#define ICON_DELETE "\xEE\xA1\xB2"       // U+E872 (24)
+#define ICON_KEY "\xEE\x9C\xBC"          // U+E73C (24)
 // Weather
 #define ICON_W_SUN "\xEE\xA0\x9A"         // U+E81A sunny
 #define ICON_W_PARTLY "\xEF\x85\xB2"      // U+F172 partly_cloudy_day

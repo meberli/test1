@@ -5,6 +5,7 @@
 
 #include "config_load.h"
 #include "nvs.h"
+#include "sdkconfig.h"
 
 namespace {
 constexpr const char* kNs = "panel";
@@ -134,4 +135,97 @@ bool settings_save_time(const TimeSettings& t) {
             nvs_set_str(h, "tz_posix", t.tz) == ESP_OK && nvs_commit(h) == ESP_OK;
   nvs_close(h);
   return ok;
+}
+
+namespace {
+const Webcam kDefaultCams[] = {
+    {1292514749, "Grabs \xC2\xB7 Nordwesten: Altmann"},
+    {1670606347, "Buchs"},
+    {1697029384, "Triesenberg: Gemeinde"},
+    {1499936290, "Wartau \xC2\xB7 Westen: Seilbahn Palfries - Churfirsten"},
+    {1697035782, "Wildhaus-Alt St. Johann: Wildhaus: Berggasthaus"},
+};
+}  // namespace
+
+// NVS holds only the IDs: blob "cam_ids" (uint32_t[n], n = 0 stored as "cams_n").
+int settings_load_cams(Webcam* out, int cap) {
+  memset(out, 0, sizeof(Webcam) * cap);
+  const int nd = static_cast<int>(sizeof(kDefaultCams) / sizeof(kDefaultCams[0]));
+  nvs_handle_t h;
+  if (nvs_open(kNs, NVS_READONLY, &h) == ESP_OK) {
+    uint32_t ids[kMaxCams];
+    size_t sz = sizeof(ids);
+    uint8_t n8 = 0;
+    bool ok = nvs_get_u8(h, "cams_n", &n8) == ESP_OK && n8 <= kMaxCams;
+    if (ok && n8 > 0) ok = nvs_get_blob(h, "cam_ids", ids, &sz) == ESP_OK && sz == n8 * sizeof(uint32_t);
+    nvs_close(h);
+    if (ok) {
+      int n = n8 > cap ? cap : n8;
+      for (int i = 0; i < n; ++i) {
+        out[i].id = ids[i];
+        for (int k = 0; k < nd; ++k) {
+          if (kDefaultCams[k].id == ids[i]) snprintf(out[i].title, sizeof(out[i].title), "%s", kDefaultCams[k].title);
+        }
+      }
+      return n;
+    }
+  }
+  int n = nd > cap ? cap : nd;
+  memcpy(out, kDefaultCams, sizeof(Webcam) * n);
+  return n;
+}
+
+bool settings_save_cams(const Webcam* cams, int n) {
+  if (n < 0 || n > kMaxCams) return false;
+  uint32_t ids[kMaxCams];
+  for (int i = 0; i < n; ++i) ids[i] = cams[i].id;
+  nvs_handle_t h;
+  if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return false;
+  bool ok = true;
+  if (n > 0) ok = nvs_set_blob(h, "cam_ids", ids, n * sizeof(uint32_t)) == ESP_OK;
+  else nvs_erase_key(h, "cam_ids");
+  ok = ok && nvs_set_u8(h, "cams_n", static_cast<uint8_t>(n)) == ESP_OK && nvs_commit(h) == ESP_OK;
+  nvs_close(h);
+  return ok;
+}
+
+bool settings_load_windy_key(char* out, size_t n, bool* own) {
+  if (own != nullptr) *own = false;
+  out[0] = '\0';
+  nvs_handle_t h;
+  if (nvs_open(kNs, NVS_READONLY, &h) == ESP_OK) {
+    bool ok = get_str(h, "windy_key", out, n) && out[0] != '\0';
+    nvs_close(h);
+    if (ok) {
+      if (own != nullptr) *own = true;
+      return true;
+    }
+  }
+  snprintf(out, n, "%s", CONFIG_PANEL_WINDY_API_KEY);
+  return out[0] != '\0';
+}
+
+bool settings_save_windy_key(const char* key) {
+  nvs_handle_t h;
+  if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return false;
+  if (key == nullptr || key[0] == '\0') {
+    nvs_erase_key(h, "windy_key");
+  } else if (nvs_set_str(h, "windy_key", key) != ESP_OK) {
+    nvs_close(h);
+    return false;
+  }
+  bool ok = nvs_commit(h) == ESP_OK;
+  nvs_close(h);
+  return ok;
+}
+
+void settings_mask_key(const char* key, char* out, size_t n) {
+  size_t len = strlen(key);
+  if (len == 0) {
+    snprintf(out, n, "-");
+  } else if (len <= 8) {
+    snprintf(out, n, "********");
+  } else {
+    snprintf(out, n, "%.4s****%s", key, key + len - 4);
+  }
 }

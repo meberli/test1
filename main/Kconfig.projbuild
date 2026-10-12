@@ -15,4 +15,14 @@ config PANEL_SERIAL_BAUD
         The ROM and bootloader always print at 115200. The app switches the
         console UART to this rate. 921600 drops bytes on the board's CH340.
 
+config PANEL_WINDY_API_KEY
+    string "Windy Webcams API key (build default)"
+    default ""
+    help
+        Used for the Kameras category when no own key is saved in
+        Einstellungen > Kameras. Never commit a key: put
+        CONFIG_PANEL_WINDY_API_KEY="..." into the gitignored
+        sdkconfig.defaults.local (merged by CMakeLists.txt).
+        Get a free key at https://api.windy.com/keys (Webcams API).
+
 endmenu

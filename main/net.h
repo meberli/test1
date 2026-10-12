@@ -25,5 +25,6 @@ struct HttpGetResult {
 
 // GET url into body (cap bytes). user != nullptr adds HTTP basic auth.
 // HTTPS uses the IDF certificate bundle.
+// hdr_name/hdr_value add one request header (e.g. x-windy-api-key).
 HttpGetResult http_get(const char* url, const char* user, const char* password, uint8_t* body, size_t cap,
-                       int timeout_ms);
+                       int timeout_ms, const char* hdr_name = nullptr, const char* hdr_value = nullptr);

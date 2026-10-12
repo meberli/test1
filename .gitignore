@@ -16,3 +16,9 @@ sdkconfig.old
 v2shots/
 idfshots/
 v3shots/
+
+# Local secrets (Windy API key)
+sdkconfig.defaults.local
+v4shots/
+v5shots/
+shot.png

@@ -1,7 +1,7 @@
 idf_component_register(
     SRCS "app_main.cpp" "sys.cpp" "net.cpp" "main.cpp" "panel_hw.cpp" "panel_ui.cpp"
          "loxone_client.cpp" "loxone_structure.cpp" "test_harness.cpp" "weather_derive.cpp"
-         "settings.cpp" "clock_sync.cpp" "font_inter_14.c" "font_inter_16.c" "font_inter_sb16.c"
+         "settings.cpp" "clock_sync.cpp" "webcams.cpp" "font_inter_14.c" "font_inter_16.c" "font_inter_sb16.c"
          "font_inter_20.c" "font_inter_light_40.c" "font_inter_xl_72.c" "font_clock_150.c" "font_icons_80.c"
          "font_icons_38.c" "font_icons_32.c" "font_icons_24.c" "font_icons_16.c"
     INCLUDE_DIRS "."

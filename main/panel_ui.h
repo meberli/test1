@@ -5,6 +5,7 @@
 #include "loxone_types.h"
 #include "lvgl.h"
 #include "settings.h"
+#include "webcams.h"
 
 struct LoxoneCommandRequest {
   char action[40];
@@ -101,3 +102,17 @@ bool ui_power_touch(bool pressed);
 void ui_power_describe(char* out, size_t n);       // "scr=on|off bl=N to=S saver=K"
 void ui_set_screen_timeout(uint16_t seconds);      // runtime only (harness)
 lv_obj_t* ui_overlay();                            // screensaver screen while off (SHOT)
+
+// --- Kameras (Windy webcams) ---
+// The UI owns two PSRAM frames (480x480 RGB565); a request names the one that
+// is not on screen and the network task fills it.
+struct CamRequest {
+  uint32_t id;
+  uint16_t* frame;
+};
+bool ui_take_cam(CamRequest* out);
+void ui_cam_done(bool ok, int status, const CamInfo& info, uint16_t* frame, const char* err);
+void ui_cam_lookup_done(bool ok, int status, const CamInfo& info);
+void ui_cam_nearby_done(bool ok, int status, const CamInfo* found, int n, const char* place);
+void ui_cams_saved(bool ok);
+void ui_windy_key_done(bool ok);

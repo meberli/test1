@@ -178,3 +178,11 @@ Partitions (`partitions.csv`): NVS, PHY, a 4 MB factory app, and a 256 KB `cored
 - Navy gradient background, glass cards (#1B2333 to #131926, 1 px #2A3448 border), Material Symbols weather glyphs. Home: date and time header, one weather card (now, then Heute and Morgen under a divider; tap a day for the day view) and five icon-only buttons.
 - Bildschirm: timeout, plus Bildschirmschoner Schwarz (optionally with the dim "wake me up"), Digital (large clock and date, 40 % backlight, small drift every minute) or Analog (Swiss railway clock: white dial, black bar marks and hands, red second hand with a disc at its tip that sweeps in 58.5 s and rests at 12 until the minute hand jumps). The saver is its own LVGL screen. The analog clock invalidates only the old and new second-hand rectangles (about 12 fps) and the whole dial once a minute. Any touch wakes the panel and is swallowed.
 - Uhrzeit: NTP server (ch.pool.ntp.org default, presets or your own) and time zone (Europe/Zurich `CET-1CEST,M3.5.0,M10.5.0/3` default), stored in NVS (`ntp_srv`, `tz_name`, `tz_posix`). SNTP uses `esp_netif_sntp` (`main/clock_sync.cpp`) and is restarted when the server changes.
+
+## Kameras (Windy webcams)
+
+Home button "Kameras" (videocam) shows one Windy webcam per page: swipe left/right to page, swipe up for home. The overlay has the title, place, capture age ("vor X Min"), the webcam page (windy.com/webcams/<id>) and "Webcams provided by windy.com" (Windy API terms). Pictures are refreshed every 2 min while visible. Per Windy's terms images are never upscaled: the free tier only delivers the 400x224 preview, so it is shown 1:1 and centred.
+
+- Settings > Kameras: add by Windy ID, place search (Open-Meteo geocoding, then webcams within 25 km), delete. Only the IDs are stored in NVS; image URLs are tokenised and fetched fresh before every download, never stored.
+- API key: Settings > Kameras > API-Key takes the user's own key (NVS, masked display, can be cleared). Without one the build default `CONFIG_PANEL_WINDY_API_KEY` is used. Put it in the gitignored `sdkconfig.defaults.local` (`CONFIG_PANEL_WINDY_API_KEY="..."`); CMakeLists.txt merges that file automatically. Free key: https://api.windy.com/keys (Webcams API).
+- Test: `python tools/cam_test.py --port COM14 --out v5shots` (test firmware).

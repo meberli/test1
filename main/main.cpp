@@ -20,6 +20,7 @@
 #include "panel_hw.h"
 #include "panel_ui.h"
 #include "weather_derive.h"
+#include "webcams.h"
 #include "board_pins.h"
 #include "test_harness.h"
 
@@ -246,13 +247,14 @@ const char* kNotConfiguredBody =
 // res_q. Big results (controls, week) live in static storage that only the
 // network task writes before posting and only the UI task reads afterwards.
 
-enum class NetOp : uint8_t { Connect, Load, Command, State, Weather, Settings };
+enum class NetOp : uint8_t { Connect, Load, Command, State, Weather, Settings, Camera };
 
 struct NetRequest {
   NetOp op;
   LoxoneCommandRequest command;
   LoxoneStateRequest state;
   SettingsRequest settings;
+  CamRequest cam;
 };
 
 struct NetResult {
@@ -276,7 +278,20 @@ struct NetResult {
   uint8_t settings_kind;
   int count;
   Location location;
+  // Camera / CamLookup
+  int status;
+  CamInfo cam;
+  uint16_t* frame;
 };
+
+constexpr int kMaxFound = 20;
+CamInfo* g_found = nullptr;  // PSRAM, kMaxFound entries; CamNearby results (network task writes, UI reads after the result)
+
+// Windy key for this request (own NVS key, else the build default).
+bool windy_key(char* key, size_t n) {
+  bool own = false;
+  return settings_load_windy_key(key, n, &own);
+}
 
 QueueHandle_t net_q = nullptr;
 QueueHandle_t res_q = nullptr;
@@ -361,6 +376,45 @@ void net_settings(const SettingsRequest& s, NetResult* res) {
       clock_sntp_start(s.time.server);
       console_printf("Time server %s, zone %s (%s) saved=%d\n", s.time.server, s.time.tz_name, s.time.tz, res->ok ? 1 : 0);
       break;
+    case SettingsRequest::CamLookup: {
+      char key[72];
+      if (!windy_key(key, sizeof(key))) {
+        res->status = 401;
+        break;
+      }
+      res->ok = windy_cam_info(key, s.cam_id, &res->cam, &res->status);
+      memset(res->cam.url, 0, sizeof(res->cam.url));
+      console_printf("Webcam lookup %lu -> %s (HTTP %d)\n", static_cast<unsigned long>(s.cam_id),
+                     res->ok ? res->cam.title : "-", res->status);
+      break;
+    }
+    case SettingsRequest::CamNearby: {
+      char key[72];
+      if (!windy_key(key, sizeof(key))) {
+        res->status = 401;
+        break;
+      }
+      if (g_found == nullptr) break;
+      int places = geocode(s.query, g_places);
+      if (places <= 0) {
+        res->status = places == 0 ? 404 : 0;
+        snprintf(res->detail, sizeof(res->detail), "%s", s.query);
+        break;
+      }
+      snprintf(res->detail, sizeof(res->detail), "%s", g_places[0].name);
+      res->count = windy_nearby(key, g_places[0].lat, g_places[0].lon, 25, g_found, kMaxFound, &res->status);
+      res->ok = res->count >= 0;
+      if (res->count < 0) res->count = 0;
+      break;
+    }
+    case SettingsRequest::SetCams:
+      res->ok = settings_save_cams(s.cams, s.cam_n);
+      console_printf("Webcams saved: %d (ok=%d)\n", s.cam_n, res->ok ? 1 : 0);
+      break;
+    case SettingsRequest::SetWindyKey:
+      res->ok = settings_save_windy_key(s.key);
+      console_printf("Windy key %s (ok=%d)\n", s.key[0] != '\0' ? "saved" : "reset to default", res->ok ? 1 : 0);
+      break;
     case SettingsRequest::ResetLocation:
       settings_reset_location();
       g_loc = settings_default_location();
@@ -410,6 +464,28 @@ void net_task(void*) {
         res.ok = r.ok;
         res.index = req.state.index;
         console_printf("State %d -> %s (%s)\n", req.state.index, r.ok ? res.value : "-", r.ok ? "ok" : r.detail);
+        break;
+      }
+      case NetOp::Camera: {
+        // Fresh details first: the image URL token expires (10 min, free tier).
+        char key[72];
+        res.cam.id = req.cam.id;
+        res.frame = req.cam.frame;
+        if (!windy_key(key, sizeof(key))) {
+          res.status = 401;
+          snprintf(res.detail, sizeof(res.detail), "Kein Windy API-Key");
+          break;
+        }
+        if (!windy_cam_info(key, req.cam.id, &res.cam, &res.status)) {
+          snprintf(res.detail, sizeof(res.detail), "Windy HTTP %d", res.status);
+          res.cam.id = req.cam.id;
+          break;
+        }
+        res.ok = windy_cam_image(res.cam.url, req.cam.frame, res.detail, sizeof(res.detail));
+        memset(res.cam.url, 0, sizeof(res.cam.url));  // tokenised URL: used once, never kept
+        console_printf("Webcam %lu %s (internal free %u, largest %u)\n", static_cast<unsigned long>(req.cam.id),
+                       res.ok ? "ok" : res.detail, static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+                       static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)));
         break;
       }
       case NetOp::Weather:
@@ -474,11 +550,26 @@ void handle_result(const NetResult& res) {
         case SettingsRequest::SetTime:
           ui_time_done(res.ok);
           break;
+        case SettingsRequest::CamLookup:
+          ui_cam_lookup_done(res.ok, res.status, res.cam);
+          break;
+        case SettingsRequest::CamNearby:
+          ui_cam_nearby_done(res.ok, res.status, g_found, res.count, res.detail);
+          break;
+        case SettingsRequest::SetCams:
+          ui_cams_saved(res.ok);
+          break;
+        case SettingsRequest::SetWindyKey:
+          ui_windy_key_done(res.ok);
+          break;
         default:
           ui_location_done(res.ok, res.location.name);
           next_weather_ms = now_ms();  // refresh the weather right away
           break;
       }
+      break;
+    case NetOp::Camera:
+      ui_cam_done(res.ok, res.status, res.cam, res.frame, res.detail);
       break;
     case NetOp::Weather:
       ui_set_weather(res.ok, res.temp_c, res.code);
@@ -540,6 +631,9 @@ void poll() {
         net_post(r);
       } else if (ui_take_state(&r.state)) {
         r.op = NetOp::State;
+        net_post(r);
+      } else if (ui_take_cam(&r.cam)) {
+        r.op = NetOp::Camera;
         net_post(r);
       } else if (static_cast<int32_t>(now_ms() - next_weather_ms) >= 0) {
         r.op = NetOp::Weather;
@@ -632,6 +726,7 @@ void ui_task(void*) {
 
 void app_start() {
   g_loc = settings_load_location();
+  g_found = static_cast<CamInfo*>(heap_caps_calloc(kMaxFound, sizeof(CamInfo), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   net_q = xQueueCreate(2, sizeof(NetRequest));
   res_q = xQueueCreate(2, sizeof(NetResult));
   // Network and protocol work on core 0 (with the Wi-Fi stack), UI on core 1.
