@@ -15,6 +15,7 @@
 #include "panel_hw.h"
 #include "weather_derive.h"
 #include <esp_heap_caps.h>
+#include <esp_random.h>
 
 namespace {
 
@@ -47,7 +48,7 @@ constexpr uint32_t kCyan = 0x5AC8F5;
 constexpr uint32_t kPurple = 0xBF5AF2;
 
 enum Section : uint8_t { kSecFav = 0, kSecLight = 1, kSecShutter = 2, kSecOther = 3 };
-enum class Nav : uint8_t { Home, Category, Weather, Settings, WifiList, WifiPass, Location };
+enum class Nav : uint8_t { Home, Category, Weather, Settings, WifiList, WifiPass, Location, Display };
 
 const char* kShutterLabel[2] = {"Auf", "Ab"};
 const char* kShutterCommand[2] = {"FullUp", "FullDown"};
@@ -106,6 +107,21 @@ lv_obj_t* weather_place = nullptr;
 lv_obj_t* set_root = nullptr;
 lv_obj_t* set_wifi_val = nullptr;
 lv_obj_t* set_loc_val = nullptr;
+lv_obj_t* set_disp_val = nullptr;
+// Display settings screen and the screen-off layer
+lv_obj_t* disp_root = nullptr;
+lv_obj_t* disp_to_btn[kTimeoutChoiceN] = {};
+lv_obj_t* disp_hint_sw = nullptr;
+DisplaySettings disp = {120, true};
+uint16_t scr_timeout_s = 120;  // effective timeout (harness SCRTO may override)
+bool scr_off = false;
+bool wake_swallow = false;
+uint32_t last_activity = 0;
+lv_obj_t* sleep_layer = nullptr;
+lv_obj_t* sleep_hint = nullptr;
+uint32_t hint_moved_ms = 0;
+constexpr uint32_t kHintMoveMs = 45000;
+constexpr uint8_t kHintBacklight = 4;  // percent
 lv_obj_t* wl_root = nullptr;
 lv_obj_t* wl_list = nullptr;
 lv_obj_t* wl_status = nullptr;
@@ -234,6 +250,30 @@ void style_glass(lv_obj_t* obj, lv_coord_t radius) {
   lv_obj_set_style_border_color(obj, lv_color_hex(0xFFFFFF), 0);
   lv_obj_set_style_border_opa(obj, LV_OPA_40, 0);
   lv_obj_set_style_shadow_width(obj, 0, 0);
+  lv_obj_set_style_outline_width(obj, 0, 0);
+  lv_obj_set_style_pad_all(obj, 0, 0);
+  lv_obj_clear_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
+}
+
+// Home tile: squircle glass with a per-category accent gradient and a soft
+// accent glow. The flash on tap (LV_STATE_PRESSED) brightens it.
+void style_tile(lv_obj_t* obj, uint32_t accent) {
+  lv_color_t a = lv_color_hex(accent);
+  lv_color_t dark = lv_color_hex(0x141416);
+  lv_obj_set_style_radius(obj, 38, 0);
+  lv_obj_set_style_bg_color(obj, lv_color_mix(a, dark, 150), 0);
+  lv_obj_set_style_bg_grad_color(obj, lv_color_mix(a, dark, 45), 0);
+  lv_obj_set_style_bg_grad_dir(obj, LV_GRAD_DIR_VER, 0);
+  lv_obj_set_style_bg_opa(obj, 225, 0);
+  lv_obj_set_style_bg_color(obj, lv_color_mix(a, lv_color_hex(0xFFFFFF), 200), LV_STATE_PRESSED);
+  lv_obj_set_style_bg_grad_color(obj, a, LV_STATE_PRESSED);
+  lv_obj_set_style_border_width(obj, 1, 0);
+  lv_obj_set_style_border_color(obj, lv_color_hex(0xFFFFFF), 0);
+  lv_obj_set_style_border_opa(obj, LV_OPA_30, 0);
+  lv_obj_set_style_shadow_width(obj, 28, 0);
+  lv_obj_set_style_shadow_ofs_y(obj, 8, 0);
+  lv_obj_set_style_shadow_color(obj, a, 0);
+  lv_obj_set_style_shadow_opa(obj, LV_OPA_40, 0);
   lv_obj_set_style_outline_width(obj, 0, 0);
   lv_obj_set_style_pad_all(obj, 0, 0);
   lv_obj_clear_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
@@ -833,6 +873,7 @@ void hide_settings() {
   hide(wl_root);
   hide(wp_root);
   hide(loc_root);
+  hide(disp_root);
   if (kb != nullptr) {
     lv_keyboard_set_textarea(kb, nullptr);
     hide(kb);
@@ -887,7 +928,7 @@ void back_level() {
 void refresh_weather_day();
 
 void swipe_page(int dir) {
-  if (nav == Nav::WifiList || nav == Nav::WifiPass || nav == Nav::Location) {
+  if (nav == Nav::WifiList || nav == Nav::WifiPass || nav == Nav::Location || nav == Nav::Display) {
     if (dir < 0) settings_back();
     return;
   }
@@ -1480,6 +1521,130 @@ void queue_settings(const SettingsRequest& r) {
   settings_pending = true;
 }
 
+const char* timeout_text(uint16_t s) {
+  switch (s) {
+    case 0: return "Aus";
+    case 30: return "30 s";
+    case 60: return "1 min";
+    case 120: return "2 min";
+    case 300: return "5 min";
+    case 600: return "10 min";
+    default: return "?";
+  }
+}
+
+void refresh_display_settings() {
+  char buf[64];
+  if (disp.timeout_s == 0) {
+    snprintf(buf, sizeof(buf), "Bleibt an");
+  } else {
+    snprintf(buf, sizeof(buf), "Aus nach %s, Hinweis %s", timeout_text(disp.timeout_s), disp.hint ? "an" : "aus");
+  }
+  if (set_disp_val != nullptr) lv_label_set_text(set_disp_val, buf);
+  for (int i = 0; i < kTimeoutChoiceN; ++i) {
+    if (disp_to_btn[i] == nullptr) continue;
+    if (kTimeoutChoices[i] == disp.timeout_s) {
+      lv_obj_add_state(disp_to_btn[i], LV_STATE_CHECKED);
+    } else {
+      lv_obj_clear_state(disp_to_btn[i], LV_STATE_CHECKED);
+    }
+  }
+  if (disp_hint_sw != nullptr) {
+    if (disp.hint) {
+      lv_obj_add_state(disp_hint_sw, LV_STATE_CHECKED);
+    } else {
+      lv_obj_clear_state(disp_hint_sw, LV_STATE_CHECKED);
+    }
+  }
+}
+
+void open_display() {
+  nav = Nav::Display;
+  hide_settings();
+  refresh_display_settings();
+  show(disp_root);
+}
+
+void on_timeout_btn(lv_event_t* e) {
+  if (gesture_consumed) return;
+  int i = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
+  disp.timeout_s = kTimeoutChoices[i];
+  scr_timeout_s = disp.timeout_s;
+  last_activity = now_ms();
+  bool ok = settings_save_display(disp);
+  console_printf("Screen timeout %u s saved=%d\n", static_cast<unsigned>(disp.timeout_s), ok ? 1 : 0);
+  refresh_display_settings();
+}
+
+void on_hint_row(lv_event_t*) {
+  if (gesture_consumed) return;
+  disp.hint = !disp.hint;
+  bool ok = settings_save_display(disp);
+  console_printf("Screen hint %d saved=%d\n", disp.hint ? 1 : 0, ok ? 1 : 0);
+  refresh_display_settings();
+}
+
+// --- Screen timeout ---
+void move_hint() {
+  int x = 16 + static_cast<int>(esp_random() % (kScreen - 140));
+  int y = 16 + static_cast<int>(esp_random() % (kScreen - 50));
+  lv_obj_set_pos(sleep_hint, x, y);
+  hint_moved_ms = now_ms();
+}
+
+void screen_off() {
+  if (scr_off) return;
+  scr_off = true;
+  lv_obj_clear_flag(sleep_layer, LV_OBJ_FLAG_HIDDEN);
+  if (disp.hint) {
+    lv_obj_clear_flag(sleep_hint, LV_OBJ_FLAG_HIDDEN);
+    move_hint();
+  } else {
+    lv_obj_add_flag(sleep_hint, LV_OBJ_FLAG_HIDDEN);
+  }
+  panel_backlight(disp.hint ? kHintBacklight : 0, 600);
+  console_printf("Screen off (hint %d)\n", disp.hint ? 1 : 0);
+}
+
+void hide_sleep_layer(void*) { lv_obj_add_flag(sleep_layer, LV_OBJ_FLAG_HIDDEN); }
+
+void screen_on() {
+  scr_off = false;
+  last_activity = now_ms();
+  panel_backlight(100, 150);
+  lv_async_call(hide_sleep_layer, nullptr);  // not from inside the input read
+  console_puts("Screen on");
+}
+
+void power_tick(lv_timer_t*) {
+  uint32_t now = now_ms();
+  if (scr_off) {
+    if (disp.hint && now - hint_moved_ms >= kHintMoveMs) move_hint();
+    return;
+  }
+  if (scr_timeout_s != 0 && !wake_swallow && now - last_activity >= scr_timeout_s * 1000u) screen_off();
+}
+
+void build_sleep_layer() {
+  sleep_layer = lv_obj_create(lv_layer_top());
+  lv_obj_set_pos(sleep_layer, 0, 0);
+  lv_obj_set_size(sleep_layer, kScreen, kScreen);
+  lv_obj_set_style_bg_color(sleep_layer, lv_color_hex(0x000000), 0);
+  lv_obj_set_style_bg_opa(sleep_layer, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(sleep_layer, 0, 0);
+  lv_obj_set_style_radius(sleep_layer, 0, 0);
+  lv_obj_set_style_pad_all(sleep_layer, 0, 0);
+  lv_obj_clear_flag(sleep_layer, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(sleep_layer, LV_OBJ_FLAG_CLICKABLE);
+  sleep_hint = make_label(sleep_layer, &font_dejavu_14, lv_color_hex(0x9A9A9A));
+  lv_label_set_text(sleep_hint, "wake me up");
+  lv_obj_add_flag(sleep_layer, LV_OBJ_FLAG_HIDDEN);
+  disp = settings_load_display();
+  scr_timeout_s = disp.timeout_s;
+  last_activity = now_ms();
+  lv_timer_create(power_tick, 250, nullptr);
+}
+
 void open_settings() {
   if (message_open) return;
   nav = Nav::Settings;
@@ -1489,6 +1654,7 @@ void open_settings() {
   hide_settings();
   lv_label_set_text(set_wifi_val, cur_ssid[0] != '\0' ? cur_ssid : "nicht verbunden");
   lv_label_set_text(set_loc_val, cur_place);
+  refresh_display_settings();
   show(set_root);
 }
 
@@ -1648,6 +1814,7 @@ void on_settings_row(lv_event_t* e) {
   console_printf("Activate settings row %d\n", which);
   if (which == 0) open_wifi_list();
   if (which == 1) open_location();
+  if (which == 2) open_display();
 }
 
 void on_msg_wifi(lv_event_t*) {
@@ -1672,12 +1839,12 @@ lv_obj_t* make_ta(lv_obj_t* parent, int y, const char* placeholder) {
 
 void build_settings_screens(lv_obj_t* screen) {
   set_root = make_screen_root(screen, "Einstellungen");
-  const char* names[2] = {"WLAN", "Wetter-Ort"};
-  const char* icons[2] = {ICON_WIFI3, ICON_PLACE};
-  const uint32_t colors[2] = {kCyan, kOrange};
-  lv_obj_t** vals[2] = {&set_wifi_val, &set_loc_val};
-  const char* keys[2] = {"set:wifi", "set:loc"};
-  for (int i = 0; i < 2; ++i) {
+  const char* names[3] = {"WLAN", "Wetter-Ort", "Bildschirm"};
+  const char* icons[3] = {ICON_WIFI3, ICON_PLACE, ICON_SCREEN};
+  const uint32_t colors[3] = {kCyan, kOrange, kPurple};
+  lv_obj_t** vals[3] = {&set_wifi_val, &set_loc_val, &set_disp_val};
+  const char* keys[3] = {"set:wifi", "set:loc", "set:disp"};
+  for (int i = 0; i < 3; ++i) {
     lv_obj_t* row = make_row(set_root, 88, icons[i], colors[i], on_settings_row, i);
     lv_obj_set_pos(row, kMargin, 70 + i * 104);
     reg(keys[i], row);
@@ -1692,6 +1859,45 @@ void build_settings_screens(lv_obj_t* screen) {
     lv_label_set_text(chev, ICON_CHEVRON);
     lv_obj_align(chev, LV_ALIGN_RIGHT_MID, 0, 0);
   }
+
+  // Bildschirm: timeout choices and the off-mode hint toggle.
+  disp_root = make_screen_root(screen, "Bildschirm");
+  lv_obj_t* to_label = make_label(disp_root, &font_dejavu_14, lv_color_hex(kTextDim));
+  lv_obj_set_pos(to_label, 24, 60);
+  lv_label_set_text(to_label, "Ausschalten nach");
+  for (int i = 0; i < kTimeoutChoiceN; ++i) {
+    lv_obj_t* b = lv_btn_create(disp_root);
+    lv_obj_set_size(b, 136, 64);
+    lv_obj_set_pos(b, kMargin + (i % 3) * 148, 88 + (i / 3) * 76);
+    style_glass(b, 18);
+    lv_obj_set_style_bg_color(b, lv_color_hex(kPurple), LV_STATE_CHECKED);
+    lv_obj_set_style_bg_opa(b, LV_OPA_70, LV_STATE_CHECKED);
+    lv_obj_add_event_cb(b, on_timeout_btn, LV_EVENT_CLICKED, reinterpret_cast<void*>(static_cast<intptr_t>(i)));
+    watch(b);
+    char key[8];
+    snprintf(key, sizeof(key), "to:%d", i);
+    reg(key, b);
+    disp_to_btn[i] = b;
+    lv_obj_t* t = make_label(b, &font_dejavu_20, lv_color_hex(kText));
+    lv_label_set_text(t, timeout_text(kTimeoutChoices[i]));
+    lv_obj_center(t);
+  }
+  lv_obj_t* hint_row = make_row(disp_root, 88, nullptr, 0, on_hint_row, 0);
+  lv_obj_set_pos(hint_row, kMargin, 252);
+  reg("disp:hint", hint_row);
+  lv_obj_t* hn = make_label(hint_row, &font_dejavu_20, lv_color_hex(kText));
+  lv_label_set_text(hn, "Hinweis anzeigen");
+  lv_obj_align(hn, LV_ALIGN_TOP_LEFT, 16, 14);
+  lv_obj_t* hd = make_label(hint_row, &font_dejavu_14, lv_color_hex(kTextDim));
+  lv_label_set_text(hd, "Schwach leuchtendes \"wake me up\" statt ganz schwarz");
+  lv_obj_set_width(hd, 320);
+  lv_label_set_long_mode(hd, LV_LABEL_LONG_WRAP);
+  lv_obj_align(hd, LV_ALIGN_BOTTOM_LEFT, 16, -10);
+  disp_hint_sw = lv_switch_create(hint_row);
+  lv_obj_set_size(disp_hint_sw, 64, 34);
+  lv_obj_align(disp_hint_sw, LV_ALIGN_RIGHT_MID, -12, 0);
+  lv_obj_clear_flag(disp_hint_sw, LV_OBJ_FLAG_CLICKABLE);  // the whole row toggles
+  lv_obj_set_style_bg_color(disp_hint_sw, lv_color_hex(kGreen), static_cast<lv_style_selector_t>(LV_PART_INDICATOR) | LV_STATE_CHECKED);
 
   wl_root = make_screen_root(screen, "WLAN");
   wl_status = make_label(wl_root, &font_dejavu_14, lv_color_hex(kTextDim));
@@ -1758,6 +1964,8 @@ void ui_describe(char* out, size_t n) {
     snprintf(out, n, "wifi %d scanning=%d", ui_ap_n, wl_scanning ? 1 : 0);
   } else if (nav == Nav::WifiPass) {
     snprintf(out, n, "wifipass connecting=%d", wp_connecting ? 1 : 0);
+  } else if (nav == Nav::Display) {
+    snprintf(out, n, "display timeout=%u hint=%d", static_cast<unsigned>(disp.timeout_s), disp.hint ? 1 : 0);
   } else if (nav == Nav::Location) {
     snprintf(out, n, "location %d searching=%d", ui_place_n, (loc_searching || settings_pending) ? 1 : 0);
   } else {
@@ -1888,30 +2096,26 @@ void ui_init() {
     int y;
   };
   static const HomeButton kButtons[5] = {
-      {ICON_STAR, "Favoriten", "cat:fav", kYellow, 20, 222},
-      {ICON_BULB, "Licht", "cat:licht", kOrange, 172, 222},
-      {ICON_BLINDS, "Storen", "cat:storen", kCyan, 324, 222},
-      {ICON_TOGGLE, "Schalter", "cat:schalter", kPurple, 96, 350},
-      {ICON_SETTINGS, "Einstellungen", "cat:settings", kTextDim, 248, 350},
+      {ICON_STAR, "Favoriten", "cat:fav", kYellow, 36, 214},
+      {ICON_BULB, "Licht", "cat:licht", kOrange, 180, 214},
+      {ICON_BLINDS, "Storen", "cat:storen", kCyan, 324, 214},
+      {ICON_TOGGLE, "Schalter", "cat:schalter", kPurple, 108, 346},
+      {ICON_SETTINGS, "Einstellungen", "cat:settings", 0x8E8E93, 252, 346},
   };
   for (int i = 0; i < 5; ++i) {
     const HomeButton& b = kButtons[i];
     lv_obj_t* btn = lv_btn_create(home_root);
     lv_obj_set_pos(btn, b.x, b.y);
-    lv_obj_set_size(btn, 136, 112);
-    style_glass(btn, 24);
+    lv_obj_set_size(btn, 120, 120);
+    style_tile(btn, b.color);
     lv_obj_add_event_cb(btn, on_category, LV_EVENT_CLICKED, reinterpret_cast<void*>(static_cast<intptr_t>(i)));
     watch(btn);
     reg(b.name, btn);
     card_btn[i] = btn;
 
-    lv_obj_t* icon = make_label(btn, &font_icons_44, lv_color_hex(b.color));
+    lv_obj_t* icon = make_label(btn, &font_icons_60, lv_color_hex(kText));
     lv_label_set_text(icon, b.icon);
-    lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 12);
-
-    lv_obj_t* name = make_label(btn, &font_dejavu_14, lv_color_hex(kText));
-    lv_label_set_text(name, b.label);
-    lv_obj_align(name, LV_ALIGN_BOTTOM_MID, 0, -14);
+    lv_obj_center(icon);
   }
 
   cat_root = lv_obj_create(screen);
@@ -2089,6 +2293,32 @@ void ui_init() {
   hide(message);
   hide(home_root);
   build_settings_screens(screen);
+  build_sleep_layer();
+}
+
+bool ui_power_touch(bool pressed) {
+  if (pressed) last_activity = now_ms();
+  if (scr_off && pressed) {
+    wake_swallow = true;
+    screen_on();
+    console_puts("Wake touch swallowed");
+    return false;
+  }
+  if (wake_swallow) {
+    if (!pressed) wake_swallow = false;
+    return false;
+  }
+  return true;
+}
+
+void ui_power_describe(char* out, size_t n) {
+  snprintf(out, n, "scr=%s bl=%u to=%u", scr_off ? "off" : "on", static_cast<unsigned>(panel_backlight_level()),
+           static_cast<unsigned>(scr_timeout_s));
+}
+
+void ui_set_screen_timeout(uint16_t seconds) {
+  scr_timeout_s = seconds;
+  last_activity = now_ms();
 }
 
 void ui_show_message(const char* title, const char* body, bool retry) {

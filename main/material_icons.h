@@ -1,7 +1,7 @@
 #pragma once
 // Google Material Symbols Rounded (variable font, default instance), only the
 // glyphs below, converted with lv_font_conv 1.5 (4 bpp):
-//   font_icons_44: star, lightbulb, blinds_2, toggle_on, settings
+//   font_icons_60: star, lightbulb, blinds_2, toggle_on, settings
 //   font_icons_24: wifi, wifi_2_bar, wifi_1_bar, signal_wifi_0_bar, lock,
 //                  location_on, search, check, chevron_right
 // Material Symbols: Copyright Google LLC, Apache License 2.0
@@ -9,7 +9,7 @@
 
 #include "lvgl.h"
 
-LV_FONT_DECLARE(font_icons_44)
+LV_FONT_DECLARE(font_icons_60)
 LV_FONT_DECLARE(font_icons_24)
 
 #define ICON_STAR "\xEF\x82\x9A"
@@ -26,3 +26,4 @@ LV_FONT_DECLARE(font_icons_24)
 #define ICON_SEARCH "\xEE\xBD\xBA"
 #define ICON_CHECK "\xEE\x99\xA8"
 #define ICON_CHEVRON "\xEE\x97\x8C"
+#define ICON_SCREEN "\xEF\x85\x99"

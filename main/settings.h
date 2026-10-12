@@ -32,7 +32,7 @@ struct GeoPlace {
 constexpr int kMaxAps = 16;
 constexpr int kMaxPlaces = 10;
 
-// Default location: Buchs SG (the coordinates the firmware always used).
+// Default location: Buchs SG (Open-Meteo geocoding: 47.1674 N, 9.4779 E).
 Location settings_default_location();
 
 // Wi-Fi: NVS first, else panel_config.h. false if neither has an SSID.
@@ -43,6 +43,16 @@ bool settings_save_wifi(const WifiCreds& creds);
 Location settings_load_location();
 bool settings_save_location(const Location& loc);
 bool settings_reset_location();  // back to the default (erases the NVS keys)
+
+// Display: screen timeout in seconds (0 = never) and the off-mode hint.
+struct DisplaySettings {
+  uint16_t timeout_s;
+  bool hint;
+};
+constexpr uint16_t kTimeoutChoices[] = {0, 30, 60, 120, 300, 600};
+constexpr int kTimeoutChoiceN = 6;
+DisplaySettings settings_load_display();  // default 120 s, hint on
+bool settings_save_display(const DisplaySettings& d);
 
 // Requests from the settings screens to the network task.
 struct SettingsRequest {

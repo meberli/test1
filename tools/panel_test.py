@@ -21,7 +21,7 @@ BAUD = 460800  # 921600 drops byte runs on this CH340 link
 
 
 class Panel:
-    def __init__(self, port, baud=BAUD):
+    def __init__(self, port, baud=BAUD, keep_awake=True):
         # Keep DTR/RTS low so opening the port does not reset the ESP32.
         self.s = serial.Serial()
         self.s.port = port
@@ -37,6 +37,11 @@ class Panel:
         time.sleep(0.1)
         self.s.reset_input_buffer()
         self.rx = bytearray()
+        if keep_awake:
+            try:  # no screen timeout during the suites (runtime only, not saved)
+                self.cmd("SCRTO 0", timeout=2)
+            except (TimeoutError, RuntimeError):
+                pass
 
     def _line(self, deadline):
         # Bulk reads: byte-by-byte reading is too slow at 921600 and the

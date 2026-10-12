@@ -92,3 +92,9 @@ void ui_list_dump();                             // ITEM lines for the open list
 bool ui_type(const char* text);                  // into the keyboard's text area
 bool ui_enter();                                 // keyboard OK
 void ui_reset_location();                        // back to Buchs SG (NVS erase)
+
+// Screen timeout. Called for every touch sample before LVGL; false = swallow
+// (the touch that wakes the screen, until its release).
+bool ui_power_touch(bool pressed);
+void ui_power_describe(char* out, size_t n);       // "scr=on|off bl=N to=S"
+void ui_set_screen_timeout(uint16_t seconds);      // runtime only (harness)

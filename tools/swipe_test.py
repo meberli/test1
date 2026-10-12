@@ -55,27 +55,35 @@ class Tester:
                 while True:
                     line = self.p._line(deadline)
                     if line.startswith("STATE "):
-                        w = re.match(r"STATE weather (\d+)/(\d+) relay=(\d) busy=(\d)", line)
-                        if w:
-                            return {"screen": "weather", "name": "weather", "page": int(w.group(1)),
-                                    "pages": int(w.group(2)), "relay": int(w.group(3)), "busy": int(w.group(4))}
-                        m = re.match(r"STATE (home|message|category (\S+) (\d+)/(\d+)) relay=(\d) busy=(\d)", line)
-                        if m is None:  # settings screens: "STATE <screen> ... relay= busy="
-                            g = re.match(r"STATE (\S+)(.*) relay=(\d) busy=(\d)", line)
-                            kv = dict(re.findall(r"(\w+)=(\d+)", g.group(2)))
-                            nums = re.findall(r"^ (\d+)", g.group(2))
-                            return {"screen": g.group(1), "count": int(nums[0]) if nums else 0,
-                                    **{k: int(v) for k, v in kv.items()},
-                                    "relay": int(g.group(3)), "busy": int(g.group(4))}
-                        if m.group(1) == "home" or m.group(1) == "message":
-                            return {"screen": m.group(1), "relay": int(m.group(5)), "busy": int(m.group(6))}
-                        return {"screen": "category", "name": m.group(2), "page": int(m.group(3)),
-                                "pages": int(m.group(4)), "relay": int(m.group(5)), "busy": int(m.group(6))}
+                        d = self._parse_state(line)
+                        pw = re.search(r"scr=(on|off) bl=(\d+) to=(\d+)", line)
+                        if pw:
+                            d.update(scr=pw.group(1), bl=int(pw.group(2)), to=int(pw.group(3)))
+                        return d
                     if line:
                         self.log.append(line)
             except TimeoutError:
                 continue
         raise RuntimeError("no STATE reply")
+
+    @staticmethod
+    def _parse_state(line):
+        w = re.match(r"STATE weather (\d+)/(\d+) relay=(\d) busy=(\d)", line)
+        if w:
+            return {"screen": "weather", "name": "weather", "page": int(w.group(1)),
+                    "pages": int(w.group(2)), "relay": int(w.group(3)), "busy": int(w.group(4))}
+        m = re.match(r"STATE (home|message|category (\S+) (\d+)/(\d+)) relay=(\d) busy=(\d)", line)
+        if m is None:  # settings screens: "STATE <screen> ... relay= busy="
+            g = re.match(r"STATE (\S+)(.*) relay=(\d) busy=(\d)", line)
+            kv = dict(re.findall(r"(\w+)=(\d+)", g.group(2)))
+            nums = re.findall(r"^ (\d+)", g.group(2))
+            return {"screen": g.group(1), "count": int(nums[0]) if nums else 0,
+                    **{k: int(v) for k, v in kv.items()},
+                    "relay": int(g.group(3)), "busy": int(g.group(4))}
+        if m.group(1) == "home" or m.group(1) == "message":
+            return {"screen": m.group(1), "relay": int(m.group(5)), "busy": int(m.group(6))}
+        return {"screen": "category", "name": m.group(2), "page": int(m.group(3)),
+                "pages": int(m.group(4)), "relay": int(m.group(5)), "busy": int(m.group(6))}
 
     def finger(self, x0, y0, x1, y1, ms, jitter=2.0, drift=0):
         """Press, move along an eased path with jitter, release."""

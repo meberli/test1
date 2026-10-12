@@ -7,7 +7,9 @@
 #include <esp_heap_caps.h>
 #include <esp_rom_crc.h>
 #include <esp_log.h>
+#include <esp_system.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "board_pins.h"
@@ -127,7 +129,9 @@ void handle(char* cmd) {
   } else if (strcmp(cmd, "STATE") == 0) {
     char text[64];
     ui_describe(text, sizeof(text));
-    console_printf("STATE %s relay=%d busy=%d\n", text, panel_relay_is_on() ? 1 : 0, sim != Sim::Idle ? 1 : 0);
+    char pw[40];
+    ui_power_describe(pw, sizeof(pw));
+    console_printf("STATE %s relay=%d busy=%d %s\n", text, panel_relay_is_on() ? 1 : 0, sim != Sim::Idle ? 1 : 0, pw);
   } else if (sscanf(cmd, "BAUD %d", &a) == 1 && a >= 9600) {
     // Switch the link speed for this session (resets on reboot).
     console_puts("OK");
@@ -176,6 +180,13 @@ void handle(char* cmd) {
     console_puts(ui_type(cmd + 5) ? "OK" : "ERR no text field");
   } else if (strcmp(cmd, "ENTER") == 0) {
     console_puts(ui_enter() ? "OK" : "ERR no text field");
+  } else if (strncmp(cmd, "SCRTO ", 6) == 0) {
+    ui_set_screen_timeout(static_cast<uint16_t>(atoi(cmd + 6)));
+    console_puts("OK");
+  } else if (strcmp(cmd, "REBOOT") == 0) {
+    console_puts("OK");
+    vTaskDelay(pdMS_TO_TICKS(100));
+    esp_restart();
   } else if (strcmp(cmd, "LOCRESET") == 0) {
     ui_reset_location();
     console_puts("OK");

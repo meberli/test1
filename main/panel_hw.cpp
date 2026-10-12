@@ -6,6 +6,7 @@
 #include "board_pins.h"
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
+#include "driver/ledc.h"
 #include "esp_cache.h"
 #include "esp_heap_caps.h"
 #include "esp_lcd_panel_ops.h"
@@ -198,6 +199,9 @@ void gt_poll() {
   gt_write8(0x814E, 0);
 }
 
+constexpr uint32_t kBlMax = (1u << 10) - 1;
+uint8_t bl_level = 0;
+
 lv_disp_draw_buf_t draw_buf;
 lv_disp_drv_t disp_drv;
 lv_indev_drv_t indev_drv;
@@ -240,6 +244,11 @@ void panel_touch_read_raw(lv_indev_data_t* data) {
 
 void panel_touch_read(lv_indev_drv_t*, lv_indev_data_t* data) {
   panel_touch_read_raw(data);
+  // Screen off: the waking touch is swallowed until release (no tap, no swipe).
+  if (!ui_power_touch(data->state == LV_INDEV_STATE_PRESSED)) {
+    data->state = LV_INDEV_STATE_RELEASED;
+    return;
+  }
   ui_touch_sample(data->state == LV_INDEV_STATE_PRESSED, data->point.x, data->point.y);
 }
 
@@ -248,11 +257,23 @@ void panel_touch_read(lv_indev_drv_t*, lv_indev_data_t* data) {
 bool panel_display_begin() {
   st7701_init();
   if (!rgb_begin()) return false;
-  gpio_config_t io = {};
-  io.pin_bit_mask = 1ULL << kPinBacklight;
-  io.mode = GPIO_MODE_OUTPUT;
-  gpio_config(&io);
-  gpio_set_level(static_cast<gpio_num_t>(kPinBacklight), 1);
+  // Backlight GPIO38 on LEDC PWM (20 kHz, 10 bit) so it can dim and fade.
+  ledc_timer_config_t tc = {};
+  tc.speed_mode = LEDC_LOW_SPEED_MODE;
+  tc.duty_resolution = LEDC_TIMER_10_BIT;
+  tc.timer_num = LEDC_TIMER_0;
+  tc.freq_hz = 20000;
+  tc.clk_cfg = LEDC_AUTO_CLK;
+  if (ledc_timer_config(&tc) != ESP_OK) return false;
+  ledc_channel_config_t cc = {};
+  cc.gpio_num = kPinBacklight;
+  cc.speed_mode = LEDC_LOW_SPEED_MODE;
+  cc.channel = LEDC_CHANNEL_0;
+  cc.timer_sel = LEDC_TIMER_0;
+  cc.duty = kBlMax;
+  if (ledc_channel_config(&cc) != ESP_OK) return false;
+  ledc_fade_func_install(0);
+  bl_level = 100;
   return true;
 }
 
@@ -291,6 +312,22 @@ uint8_t panel_touch_begin() {
   console_printf("GT911 at 0x%02X\n", found);
   return found;
 }
+
+void panel_backlight(uint8_t percent, uint32_t fade_ms) {
+  if (percent > 100) percent = 100;
+  bl_level = percent;
+  uint32_t duty = kBlMax * percent / 100;
+  ledc_fade_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+  if (fade_ms == 0) {
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+  } else {
+    ledc_set_fade_with_time(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty, static_cast<int>(fade_ms));
+    ledc_fade_start(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, LEDC_FADE_NO_WAIT);
+  }
+}
+
+uint8_t panel_backlight_level() { return bl_level; }
 
 bool panel_touch_ok() { return touch_ok; }
 

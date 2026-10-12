@@ -18,8 +18,8 @@ bool get_str(nvs_handle_t h, const char* key, char* out, size_t n) {
 Location settings_default_location() {
   Location l = {};
   snprintf(l.name, sizeof(l.name), "Buchs SG");
-  l.lat = 47.3925f;
-  l.lon = 9.4728f;
+  l.lat = 47.1674f;
+  l.lon = 9.4779f;
   return l;
 }
 
@@ -79,6 +79,27 @@ bool settings_reset_location() {
   nvs_erase_key(h, "loc_lat");
   nvs_erase_key(h, "loc_lon");
   bool ok = nvs_commit(h) == ESP_OK;
+  nvs_close(h);
+  return ok;
+}
+
+DisplaySettings settings_load_display() {
+  DisplaySettings d = {120, true};
+  nvs_handle_t h;
+  if (nvs_open(kNs, NVS_READONLY, &h) != ESP_OK) return d;
+  uint16_t t = 0;
+  uint8_t hint = 0;
+  if (nvs_get_u16(h, "scr_to", &t) == ESP_OK) d.timeout_s = t;
+  if (nvs_get_u8(h, "scr_hint", &hint) == ESP_OK) d.hint = hint != 0;
+  nvs_close(h);
+  return d;
+}
+
+bool settings_save_display(const DisplaySettings& d) {
+  nvs_handle_t h;
+  if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return false;
+  bool ok = nvs_set_u16(h, "scr_to", d.timeout_s) == ESP_OK && nvs_set_u8(h, "scr_hint", d.hint ? 1 : 0) == ESP_OK &&
+            nvs_commit(h) == ESP_OK;
   nvs_close(h);
   return ok;
 }

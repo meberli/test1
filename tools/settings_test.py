@@ -20,6 +20,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", default="COM14")
     ap.add_argument("--out", default="shots")
+    ap.add_argument("--prefix", default="v3")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     p = Panel(a.port)
@@ -53,14 +54,14 @@ def main():
 
     if t.state()["screen"] != "home":
         t.go_home()
-    shot("v2_home")
+    shot(a.prefix + "_home")
     for key in ("cat:fav", "cat:licht", "cat:storen", "cat:schalter", "cat:settings"):
         x, y = p.pos(key)
         check(f"home button {key} visible", 0 < x < 480 and 200 < y < 480, (x, y))
 
     tap("cat:settings")
     st = t.state(); check("open settings", st["screen"] == "settings", st)
-    shot("v2_settings")
+    shot(a.prefix + "_settings")
     t.go_home()
     st = t.state(); check("swipe up from settings -> home", st["screen"] == "home", st)
 
@@ -70,7 +71,7 @@ def main():
     check("wifi scan lists networks", st["screen"] == "wifi" and st["count"] > 0, st)
     items = p.items()
     print("  networks:", len(items), "|", "; ".join(items[:6]))
-    shot("v2_wifi_list")
+    shot(a.prefix + "_wifi_list")
     t.finger(240, 400, 238, 160, 300)  # vertical drag scrolls the list, no tap
     st = t.state(); check("drag in wifi list stays", st["screen"] == "wifi" and not t.fired(), (st, t.fired()))
     right_swipe()
@@ -82,7 +83,7 @@ def main():
     st = t.state(); check("tap network -> password screen", st["screen"] == "wifipass", st)
     p.cmd("TYPE test")  # typed but never confirmed: the Wi-Fi is not changed
     time.sleep(0.3)
-    shot("v2_wifi_password")
+    shot(a.prefix + "_wifi_password")
     right_swipe()
     st = t.state()
     check("leave password screen without connecting", st["screen"] == "settings" and st.get("connecting", 0) == 0,
@@ -93,7 +94,7 @@ def main():
     # Wetter-Ort: search, select, restore
     tap("set:loc")
     st = t.state(); check("open location search", st["screen"] == "location", st)
-    shot("v2_location_keyboard")
+    shot(a.prefix + "_location_keyboard")
 
     def search_and_pick(query, want):
         p.cmd(f"TYPE {query}")
@@ -106,7 +107,7 @@ def main():
         return idx
 
     idx = search_and_pick("Zürich", lambda it: it.split(" ", 2)[2].startswith("Zürich|"))
-    shot("v2_location_results")
+    shot(a.prefix + "_location_results")
     if idx is not None:
         t.log = []
         tap(f"loc:{idx}")
@@ -115,9 +116,9 @@ def main():
         check("select Zürich -> settings", st["screen"] == "settings", st)
         check("weather refreshed for Zürich", any(l.startswith("Location Zürich") for l in t.log) and
               any(l.startswith("Weather ok") for l in t.log), [l for l in t.log if l.startswith(("Location", "Weather"))])
-        shot("v2_settings_zuerich")
+        shot(a.prefix + "_settings_zuerich")
         t.go_home()
-        shot("v2_home_zuerich")
+        shot(a.prefix + "_home_zuerich")
 
     to_settings()
     tap("set:loc")
@@ -135,7 +136,7 @@ def main():
     check("restore default Buchs SG", any(l.startswith("Location reset to Buchs SG") for l in t.log) and
           any(l.startswith("Weather ok") for l in t.log), [l for l in t.log if l.startswith(("Location", "Weather"))])
     t.go_home()
-    shot("v2_home_restored")
+    shot(a.prefix + "_home_restored")
 
     ok = sum(1 for _, g, _ in res if g)
     print(f"TOTAL {ok}/{len(res)}")
