@@ -2,5 +2,14 @@
 .vscode/
 .idea/
 include/panel_config.h
+main/panel_config.h
 
 __pycache__/
+
+# ESP-IDF
+build/
+build-*/
+managed_components/
+sdkconfig
+sdkconfig.old
+idfshots/

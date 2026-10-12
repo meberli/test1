@@ -48,8 +48,8 @@ These pins are the same in Arduino_GFX's `ESP32_4848S040_86BOX_GUITION` device, 
 
 - The touch controller is a GT911. Guition only says "capacitive". Every published working config for this capacitive line uses a GT911. This firmware probes I2C `0x5D` (HomeDing) and then `0x14` (one field report).
 - GT911 INT and RST are not assigned in those GPIO tables. ha5dzs sets both to `-1`. This firmware does the same and does not invent pins. GPIO35, GPIO36, and GPIO37 are blank in the NorthernMan54 table; they are not used here.
-- Display rotation is `1`, copied from the Arduino_GFX device entry. Touch rotation is `ROTATION_RIGHT`, which is the ha5dzs mapping for that display rotation. If taps land in the wrong place, change that pair. ESPHome notes that a 270° rotation is used when the USB socket faces down; that was not applied here.
-- Pixel byte order follows Arduino_GFX `useBigEndian = false` and `LV_COLOR_16_SWAP 0`. If red and blue are swapped on the glass, flip `LV_COLOR_16_SWAP` in `include/lv_conf.h`.
+- Display rotation is `1`, copied from the Arduino_GFX device entry (the flush in `main/panel_hw.cpp` rotates into the frame buffer). Touch uses the TAMC_GT911 `ROTATION_RIGHT` mapping (`x = raw_y`, `y = 480 - raw_x`), which is the ha5dzs mapping for that display rotation. If taps land in the wrong place, change that pair. ESPHome notes that a 270° rotation is used when the USB socket faces down; that was not applied here.
+- Pixel byte order follows Arduino_GFX `useBigEndian = false` and `LV_COLOR_16_SWAP 0`. If red and blue are swapped on the glass, set `CONFIG_LV_COLOR_16_SWAP=y` in `sdkconfig.defaults`.
 
 ## Pinout
 
@@ -70,7 +70,7 @@ These pins are the same in Arduino_GFX's `ESP32_4848S040_86BOX_GUITION` device, 
 
 RGB timings copied from the Arduino_GFX device: PCLK 12 MHz, hsync polarity 1, front porch 10, pulse 8, back porch 50, vsync polarity 1, front porch 10, pulse 8, back porch 20. The ST7701 init sequence is `st7701_type9_init_operations` from that library ("480x480 square (86 Box) GUITION ESP32-4848S040").
 
-Relay polarity is the ha5dzs setup write: `digitalWrite(RELAY1, LOW)` with the comment "All off, by default" (`src/main.cpp` in that port, `RELAY1` is GPIO40). HIGH turns the relay on. The ESPHome device page lists the same pin with `inverted: true`, which would mean the opposite. This firmware follows the ha5dzs off write, not that catalog flag.
+Relay polarity is the ha5dzs setup write: `digitalWrite(RELAY1, LOW)` with the comment "All off, by default" (`src/main.cpp` in the ha5dzs port, `RELAY1` is GPIO40). HIGH turns the relay on. The ESPHome device page lists the same pin with `inverted: true`, which would mean the opposite. This firmware follows the ha5dzs off write, not that catalog flag.
 
 ## What the firmware does
 
@@ -80,14 +80,14 @@ The screen is 480×480. The look follows the dark [Home Assistant visionOS theme
 
 Room names, control names, and the weather text use DejaVu Sans covering Latin-1 (U+00A0–U+00FF), including ä, ö, ü, Ä, Ö, Ü, and ß.
 
-- With no `include/panel_config.h`, or with the Wi-Fi SSID, Miniserver host, or user left empty, the screen says it is not configured. It does not pretend the house is online.
+- With no `main/panel_config.h`, or with the Wi-Fi SSID, Miniserver host, or user left empty, the screen says it is not configured. It does not pretend the house is online.
 - With a config file, it joins Wi-Fi and GETs `/data/LoxAPP3.json` with HTTP basic auth.
 - The home screen shows the current weather in Buchs, St. Gallen, and four category cards: Favoriten, Licht, Storen, Sonstiges. Weather comes from Open-Meteo (`47.3925 N, 9.4728 E`) over HTTPS with no API key. The Miniserver itself stays on local HTTP.
 - Tap a category to open it. Swipe left or right to move between pages in that category. A swipe that starts on the right edge and moves left goes back to the home screen. A swipe that starts on the bottom edge and moves up also goes home.
 - Sonstiges is one of the four home cards. Its first tile is Relais, even when Loxone has no pushbuttons. The card itself shows `Relais · An` or `Relais · Aus`. Relais is not a Loxone control and does not send a Miniserver command. It toggles relay 1 on GPIO40. Boot writes the pin low, which is off, and the pin changes only when that tile is tapped. GPIO1 and GPIO2 are not configured.
 - LoxAPP3.json has no live values. Opening a screen reads each light and shutter on it, first with `GET /jdev/sps/io/<uuidAction>/all` and, if that has no number, with `GET /jdev/sps/io/<state uuid>/state`. Until the read succeeds the tile stays unknown (`...`), not Aus. Coming back to a screen reads it again.
 - A light tap sends `On` or `Off` from the last known value, via `GET /jdev/sps/io/<uuidAction>/<command>`. Storen Auf sends `FullUp` and Ab sends `FullDown`. Position 0 is fully open and 1 is fully closed.
-- Authorization goes through `LoxoneAuthorizer` (`src/loxone_auth.h`). `LoxoneBasicAuthorizer` is what runs. `LoxoneTokenAuthorizer` is the seam for a later `getkey2` / `gettoken` flow. Set `LOXONE_AUTH` to `"token"` and it refuses to connect instead of sending the password. The client does not know which scheme `apply()` implements.
+- Authorization goes through `LoxoneAuthorizer` (`main/loxone_auth.h`). `LoxoneBasicAuthorizer` is what runs. `LoxoneTokenAuthorizer` is the seam for a later `getkey2` / `gettoken` flow. Set `LOXONE_AUTH` to `"token"` and it refuses to connect instead of sending the password. The client does not know which scheme `apply()` implements.
 - Wi-Fi passwords are not written to NVS (`WiFi.persistent(false)`). Serial logs the host and the auth scheme name, not the user or the password.
 
 The Miniserver client is HTTP only. Use the Miniserver's local HTTP port (usually 80). Weather is the one HTTPS call, to Open-Meteo.
@@ -95,10 +95,10 @@ The Miniserver client is HTTP only. Use the Miniserver's local HTTP port (usuall
 ## Configure
 
 ```sh
-cp include/panel_config.example.h include/panel_config.h
+cp main/panel_config.example.h main/panel_config.h
 ```
 
-Edit `include/panel_config.h`. That file is gitignored. `LOXONE_HOST` is a host or IP only, with no `http://` and no path.
+Edit `main/panel_config.h`. That file is gitignored. `LOXONE_HOST` is a host or IP only, with no `http://` and no path.
 
 ```c
 #define WIFI_SSID "your-ssid"
@@ -110,30 +110,56 @@ Edit `include/panel_config.h`. That file is gitignored. `LOXONE_HOST` is a host 
 #define LOXONE_AUTH "basic"
 ```
 
-Do not commit `include/panel_config.h`.
+Do not commit `main/panel_config.h`.
 
-## Build and flash over USB
+## Build and flash over USB (ESP-IDF)
 
-Install [PlatformIO](https://platformio.org/). The USB-C port is a CH340 serial adapter on GPIO43/GPIO44, so the board shows up as a normal USB serial port (`/dev/ttyUSB0`, `/dev/ttyACM0`, or `COMx`), not as the ESP32-S3 USB-Serial/JTAG device.
+The firmware is a native ESP-IDF project (v5.5.x, tested with v5.5.5): `main/` is the app component, `components/ArduinoJson` is the vendored header-only JSON library, and LVGL 8.4 comes from the Component Registry (`main/idf_component.yml`, pinned in `dependencies.lock`). No Arduino core is used.
 
-```sh
-pio run -e esp32-4848s040c
-pio run -e esp32-4848s040c -t upload
-pio device monitor -e esp32-4848s040c
+The USB-C port is a CH340 serial adapter on GPIO43/GPIO44, so the board shows up as a normal USB serial port (`/dev/ttyUSB0` or `COMx`), not as the ESP32-S3 USB-Serial/JTAG device.
+
+Windows PowerShell:
+
+```powershell
+. $HOME\esp\v5.5.5\esp-idf\export.ps1
+idf.py build
+idf.py -p COM14 flash monitor
 ```
 
-Upload speed is 460800. Auto-reset uses the CH340 RTS/DTR lines, which published notes for this board say are wired to EN and GPIO0. If upload never starts, hold BOOT, start the upload, then release BOOT.
+Linux/macOS: `. ~/esp/esp-idf/export.sh`, then the same `idf.py` commands.
 
-A build with no `panel_config.h` still compiles. That binary shows the not-configured screen.
+Configuration lives in `sdkconfig.defaults` (16 MB QIO flash, 8 MB octal PSRAM, 240 MHz, coredump to flash, watchdogs, LVGL). Do not edit the generated `sdkconfig`; after changing the defaults run `idf.py reconfigure` or delete `build/`. Project options are under "Loxone panel" in `idf.py menuconfig`.
 
-The factory app partition is 4 MB on the 16 MB flash (`partitions.csv`). Flash is QIO and PSRAM is octal (`qio_opi`), which is the ESP32-S3R8 memory type used by the published PlatformIO port.
+### Test firmware
+
+The serial test harness (`SHOT`, `TAP`, `SWIPE`, `STATE`, ...) is `CONFIG_PANEL_TEST_HARNESS`. `sdkconfig.test` turns it on and sets the console to 460800 baud (921600 drops bytes on the CH340):
+
+```powershell
+idf.py -B build-test -DSDKCONFIG="build-test/sdkconfig" -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.test" build
+idf.py -B build-test -DSDKCONFIG="build-test/sdkconfig" -p COM14 flash
+python tools/swipe_test.py --port COM14 --out shots
+python tools/press_test.py --port COM14 --out shots
+python tools/weather_test.py --port COM14 --out shots
+python tools/panel_test.py --port COM14 shot
+```
+
+Host unit test for the weather icon rules: `g++ -std=c++17 -I main tools/test_weather_derive.cpp main/weather_derive.cpp -o t && ./t`.
+
+If flashing never starts, hold BOOT, start the flash, then release BOOT. A build with no `main/panel_config.h` still compiles and shows the not-configured screen.
+
+Partitions (`partitions.csv`): NVS, PHY, a 4 MB factory app, and a 256 KB `coredump` partition (`idf.py coredump-info` after a crash).
+
+### Tasks
+
+- `net` on core 0: Wi-Fi, Miniserver HTTP (`esp_http_client`, basic auth), Open-Meteo (HTTPS, certificate bundle), JSON parsing (yields every 16 KB).
+- `ui` on core 1: LVGL, GT911 touch (`i2c_master`), the RGB panel (`esp_lcd`), the test harness. It is the only task that touches LVGL; it sends one request at a time to `net` over a queue and gets the results back on another queue.
 
 ## Sources
 
 - Guition product page for this model: <https://www.guition.com/esp32-display-module/openhasp-screen>
 - Guition specification PDF (ST7701, one-way relay SKU, cover typo S043): <https://www.guition.com/icms/upload/fb081940d6fc11f09850077a33e1404f/file/productmanager-productfile/19de32eaebc34ca68869b7da70d56e0b/Directory/ESP32-4848S040%20Specifications-EN_1776827930404.pdf>
 - Arduino_GFX device `ESP32_4848S040_86BOX_GUITION` and `st7701_type9_init_operations`: <https://github.com/moononournation/Arduino_GFX/blob/v1.6.0/examples/PDQgraphicstest/Arduino_GFX_dev_device.h> and <https://github.com/moononournation/Arduino_GFX/blob/v1.6.0/src/display/Arduino_RGB_Display.h>
-- ha5dzs PlatformIO port (pin header, GT911 with INT/RST `-1`, relays, CH340, `qio_opi`): <https://github.com/ha5dzs/Guition-ESP32-4848S040-platformio>
+- ha5dzs PlatformIO port (reference for the original PlatformIO build) (pin header, GT911 with INT/RST `-1`, relays, CH340, `qio_opi`): <https://github.com/ha5dzs/Guition-ESP32-4848S040-platformio>
 - NorthernMan54 GPIO table: <https://github.com/NorthernMan54/ESP32-4848S040/blob/main/README.md>
 - ESPHome device (ST7701S, GT911, relay GPIO40 / GPIO2 / GPIO1, backlight GPIO38): <https://devices.esphome.io/devices/guition-esp32-s3-4848s040/>
 - HomeDing (GT911 address `0x5D`, same RGB bus, relay GPIO40): <https://homeding.github.io/boards/esp32s3/panel-4848S040.htm>

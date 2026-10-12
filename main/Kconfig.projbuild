@@ -1,0 +1,18 @@
+menu "Loxone panel"
+
+config PANEL_TEST_HARNESS
+    bool "Serial test harness (SHOT, TAP, SWIPE, STATE ...)"
+    default n
+    help
+        Line commands on the console UART for remote testing with
+        tools/panel_test.py, tools/swipe_test.py and friends.
+
+config PANEL_SERIAL_BAUD
+    int "Console/harness baud rate after boot"
+    default 460800 if PANEL_TEST_HARNESS
+    default 115200
+    help
+        The ROM and bootloader always print at 115200. The app switches the
+        console UART to this rate. 921600 drops bytes on the board's CH340.
+
+endmenu

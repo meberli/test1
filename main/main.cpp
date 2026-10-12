@@ -1,0 +1,468 @@
+#include <ArduinoJson.h>
+
+#include "esp_heap_caps.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "lvgl.h"
+#include "net.h"
+#include "sdkconfig.h"
+#include "sys.h"
+
+#include <stdio.h>
+#include <string.h>
+
+#include "config_load.h"
+#include "loxone_auth.h"
+#include "loxone_client.h"
+#include "loxone_structure.h"
+#include "panel_hw.h"
+#include "panel_ui.h"
+#include "weather_derive.h"
+#include "board_pins.h"
+#include "test_harness.h"
+
+#ifndef SERIAL_BAUD
+#define SERIAL_BAUD CONFIG_PANEL_SERIAL_BAUD
+#endif
+
+namespace {
+
+enum class Phase { NotConfigured, Wifi, Loading, Ready, Failed };
+
+Phase phase = Phase::NotConfigured;
+bool load_painted = false;
+uint32_t wifi_started_ms = 0;
+constexpr uint32_t kWifiTimeoutMs = 25000;
+constexpr size_t kStructureCap = 768 * 1024;
+
+LoxoneBasicAuthorizer basic_auth(LOXONE_USER, LOXONE_PASSWORD);
+LoxoneTokenAuthorizer token_auth;
+LoxoneAuthorizer* auth = nullptr;
+uint32_t next_weather_ms = 0;
+
+// Buchs, St. Gallen. Open-Meteo needs no key. TLS is checked against the
+// IDF certificate bundle.
+// One request: current conditions, 7 daily summaries and hourly values (the
+// hourly time array is filtered out; hour i of day d is index d*24+i).
+// The parsed document (~15 KB) is allocated from the heap, which puts large
+// blocks in PSRAM on this board.
+static WeatherDetailDay week[kWxDays];
+
+bool fetch_buchs_weather(int* temp_c, int* code, WeatherDay* days, int* week_count) {
+  constexpr size_t kCap = 64 * 1024;
+  uint8_t* payload = static_cast<uint8_t*>(heap_caps_malloc(kCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (payload == nullptr) {
+    return false;
+  }
+  const char* url =
+      "https://api.open-meteo.com/v1/forecast?latitude=47.3925&longitude=9.4728"
+      "&current=temperature_2m,weather_code"
+      "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,"
+      "sunrise,sunset,wind_speed_10m_max,precipitation_probability_max"
+      "&hourly=temperature_2m,precipitation,precipitation_probability,weather_code,wind_speed_10m,cloud_cover"
+      "&timezone=Europe%2FZurich&forecast_days=7";
+  HttpGetResult http = http_get(url, nullptr, nullptr, payload, kCap, 10000);
+  if (!http.ok || http.status != 200) {
+    console_printf("Weather HTTP %d %s\n", http.status, http.error);
+    heap_caps_free(payload);
+    return false;
+  }
+  StaticJsonDocument<768> filter;
+  filter["current"]["temperature_2m"] = true;
+  filter["current"]["weather_code"] = true;
+  const char* dkeys[] = {"time", "weather_code", "temperature_2m_max", "temperature_2m_min", "precipitation_sum",
+                         "sunrise", "sunset", "wind_speed_10m_max", "precipitation_probability_max"};
+  for (const char* k : dkeys) filter["daily"][k] = true;
+  const char* hkeys[] = {"temperature_2m", "precipitation", "precipitation_probability", "weather_code",
+                         "wind_speed_10m", "cloud_cover"};
+  for (const char* k : hkeys) filter["hourly"][k] = true;
+  DynamicJsonDocument doc(24576);
+  DeserializationError err =
+      deserializeJson(doc, payload, http.length, DeserializationOption::Filter(filter));
+  heap_caps_free(payload);
+  if (err) {
+    console_printf("Weather JSON %s (%u bytes)\n", err.c_str(), static_cast<unsigned>(http.length));
+    return false;
+  }
+  JsonVariant temp = doc["current"]["temperature_2m"];
+  JsonVariant wcode = doc["current"]["weather_code"];
+  if (temp.isNull() || wcode.isNull()) {
+    return false;
+  }
+  float value = temp.as<float>();
+  *temp_c = static_cast<int>(value >= 0.f ? value + 0.5f : value - 0.5f);
+  *code = wcode.as<int>();
+  JsonObject daily = doc["daily"];
+  JsonObject hourly = doc["hourly"];
+  int n = 0;
+  for (int d = 0; d < kWxDays; ++d) {
+    if (daily["weather_code"][d].isNull() || daily["temperature_2m_max"][d].isNull() ||
+        daily["temperature_2m_min"][d].isNull()) {
+      break;
+    }
+    WeatherDetailDay& w = week[d];
+    memset(&w, 0, sizeof(w));
+    snprintf(w.date, sizeof(w.date), "%s", daily["time"][d] | "");
+    const char* sr = daily["sunrise"][d] | "";  // "2026-10-12T07:38"
+    const char* ss = daily["sunset"][d] | "";
+    snprintf(w.sunrise, sizeof(w.sunrise), "%s", strlen(sr) >= 16 ? sr + 11 : "--:--");
+    snprintf(w.sunset, sizeof(w.sunset), "%s", strlen(ss) >= 16 ? ss + 11 : "--:--");
+    w.code = daily["weather_code"][d].as<int>();
+    w.t_max = daily["temperature_2m_max"][d].as<float>();
+    w.t_min = daily["temperature_2m_min"][d].as<float>();
+    w.precip = daily["precipitation_sum"][d] | 0.0f;
+    w.prob_max = daily["precipitation_probability_max"][d] | 0;
+    w.wind_max = daily["wind_speed_10m_max"][d] | 0.0f;
+    WxHour hrs[24];
+    for (int i = 0; i < 24; ++i) {
+      int k = d * 24 + i;
+      hrs[i].code = hourly["weather_code"][k] | 0;
+      hrs[i].precip = hourly["precipitation"][k] | 0.0f;
+      hrs[i].temp = hourly["temperature_2m"][k] | 0.0f;
+      hrs[i].cloud = hourly["cloud_cover"][k] | 50.0f;
+    }
+    // Daytime window: sunrise hour .. sunset hour, else 06-21.
+    int h_rise = strlen(sr) >= 13 ? atoi(sr + 11) : 6;
+    int h_set = strlen(ss) >= 13 ? atoi(ss + 11) : 21;
+    if (h_rise < 0 || h_rise > 23 || h_set < h_rise || h_set > 23) {
+      h_rise = 6;
+      h_set = 21;
+    }
+    w.kind = static_cast<int>(derive_day(hrs + h_rise, h_set - h_rise + 1, w.precip));
+    for (int s = 0; s < kWxSlots; ++s) {
+      int h0 = d * 24 + s * 3;
+      WeatherSlot& sl = w.slot[s];
+      sl.temp = hourly["temperature_2m"][h0] | 0.0f;
+      sl.code = derive_slot_code(hrs + s * 3, 3);
+      for (int k = 0; k < 3; ++k) {
+        sl.precip += hourly["precipitation"][h0 + k] | 0.0f;
+        int pr = hourly["precipitation_probability"][h0 + k] | 0;
+        if (pr > sl.prob) sl.prob = pr;
+        float wi = hourly["wind_speed_10m"][h0 + k] | 0.0f;
+        if (wi > sl.wind) sl.wind = wi;
+      }
+    }
+    if (d < 2) {
+      days[d].code = w.code;
+      days[d].t_max = w.t_max;
+      days[d].t_min = w.t_min;
+      days[d].precip = w.precip;
+      days[d].kind = w.kind;
+      console_printf("Forecast %s %s daily code %d -> %s, max %.1f min %.1f rain %.1f mm\n",
+                    d == 0 ? "today" : "tomorrow", w.date, w.code, day_kind_name(static_cast<DayKind>(w.kind)),
+                    w.t_max, w.t_min, w.precip);
+    }
+    n++;
+  }
+  *week_count = n;
+  console_printf("Weather week %d days, JSON %u bytes, doc %u bytes\n", n, static_cast<unsigned>(http.length),
+                static_cast<unsigned>(doc.memoryUsage()));
+  return n >= 2;
+}
+
+const char* kNotConfiguredBody =
+    "Wi-Fi and Miniserver settings are missing.\n\n"
+    "Copy include/panel_config.example.h\n"
+    "to include/panel_config.h, fill in the\n"
+    "local Miniserver, then rebuild and\n"
+    "flash over USB.\n\n"
+    "Relay 1 stays off until you open\n"
+    "Sonstiges on the home screen\n"
+    "and tap Relais.";
+
+
+// ---------------------------------------------------------------------------
+// Tasks
+//   net   (core 0): Wi-Fi, Miniserver HTTP, Open-Meteo, JSON parsing (yielding).
+//   ui    (core 1): LVGL, touch, test harness. The only task that calls LVGL.
+// The UI posts one NetRequest at a time to net_q; the network task answers on
+// res_q. Big results (controls, week) live in static storage that only the
+// network task writes before posting and only the UI task reads afterwards.
+
+enum class NetOp : uint8_t { Connect, Load, Command, State, Weather };
+
+struct NetRequest {
+  NetOp op;
+  LoxoneCommandRequest command;
+  LoxoneStateRequest state;
+};
+
+struct NetResult {
+  NetOp op;
+  bool ok;
+  int index;
+  char title[40];
+  char detail[120];
+  char value[64];
+  char command[16];
+  // Load
+  size_t shown;
+  size_t supported;
+  char server[48];
+  // Weather
+  int temp_c;
+  int code;
+  WeatherDay days[2];
+  int week_count;
+};
+
+QueueHandle_t net_q = nullptr;
+QueueHandle_t res_q = nullptr;
+bool net_busy = false;
+LoxoneControl controls[kLoxoneControlCap];
+
+void net_post(const NetRequest& r) {
+  net_busy = true;
+  xQueueSend(net_q, &r, portMAX_DELAY);
+}
+
+void net_load(NetResult* res) {
+  uint8_t* buf = static_cast<uint8_t*>(heap_caps_malloc(kStructureCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (buf == nullptr) {
+    snprintf(res->title, sizeof(res->title), "Out of memory");
+    snprintf(res->detail, sizeof(res->detail), "The panel could not allocate a buffer for LoxAPP3.json.");
+    return;
+  }
+  size_t length = 0;
+  LoxoneHttpResult http = loxone_get(*auth, "/data/LoxAPP3.json", buf, kStructureCap - 1, &length);
+  if (!http.ok) {
+    heap_caps_free(buf);
+    snprintf(res->title, sizeof(res->title), "Miniserver unreachable");
+    snprintf(res->detail, sizeof(res->detail), "%s", http.detail);
+    return;
+  }
+  bool parsed = loxone_parse_structure(buf, length, controls, kLoxoneControlCap, &res->shown, &res->supported,
+                                       res->server, sizeof(res->server), res->detail, sizeof(res->detail));
+  heap_caps_free(buf);
+  if (!parsed) {
+    snprintf(res->title, sizeof(res->title), "Could not read Loxone");
+    return;
+  }
+  console_printf("LoxAPP3 %u bytes, %u controls shown, %u supported\n", static_cast<unsigned>(length),
+                 static_cast<unsigned>(res->shown), static_cast<unsigned>(res->supported));
+  res->ok = true;
+}
+
+void net_task(void*) {
+  for (;;) {
+    NetRequest req;
+    if (xQueueReceive(net_q, &req, portMAX_DELAY) != pdTRUE) {
+      continue;
+    }
+    static NetResult res;
+    memset(&res, 0, sizeof(res));
+    res.op = req.op;
+    switch (req.op) {
+      case NetOp::Connect:
+        wifi_start(WIFI_SSID, WIFI_PASSWORD, "loxone-panel");
+        res.ok = true;
+        break;
+      case NetOp::Load:
+        net_load(&res);
+        break;
+      case NetOp::Command: {
+        LoxoneHttpResult r = loxone_send_command(*auth, req.command.action, req.command.command);
+        res.ok = r.ok;
+        res.index = req.command.index;
+        snprintf(res.command, sizeof(res.command), "%s", req.command.command);
+        snprintf(res.detail, sizeof(res.detail), "%s", r.detail);
+        console_printf("Command %s -> %s\n", req.command.command, r.ok ? "ok" : r.detail);
+        break;
+      }
+      case NetOp::State: {
+        LoxoneHttpResult r = loxone_read_state(*auth, req.state.action, req.state.state, req.state.kind,
+                                               res.value, sizeof(res.value));
+        res.ok = r.ok;
+        res.index = req.state.index;
+        console_printf("State %d -> %s (%s)\n", req.state.index, r.ok ? res.value : "-", r.ok ? "ok" : r.detail);
+        break;
+      }
+      case NetOp::Weather:
+        res.ok = fetch_buchs_weather(&res.temp_c, &res.code, res.days, &res.week_count);
+        console_printf("Weather Buchs %s\n", res.ok ? "ok" : "unavailable");
+        break;
+    }
+    xQueueSend(res_q, &res, portMAX_DELAY);
+    vTaskDelay(1);
+  }
+  vTaskDelete(nullptr);  // not reached
+}
+
+// ---------------------------------------------------------------------------
+// UI side (runs in the UI task only)
+
+void start_wifi() {
+  NetRequest r = {};
+  r.op = NetOp::Connect;
+  net_post(r);
+  wifi_started_ms = now_ms();
+}
+
+void handle_result(const NetResult& res) {
+  net_busy = false;
+  switch (res.op) {
+    case NetOp::Connect:
+      break;
+    case NetOp::Load:
+      if (!res.ok) {
+        phase = Phase::Failed;
+        ui_show_message(res.title, res.detail, true);
+        break;
+      }
+      phase = Phase::Ready;
+      ui_show_controls(controls, res.shown, res.supported, res.server[0] != '\0' ? res.server : "Loxone");
+      if (!panel_touch_ok()) {
+        ui_set_status("Touch controller not found");
+      }
+      break;
+    case NetOp::Command:
+      ui_command_finished(res.index, res.ok, res.command, res.detail);
+      break;
+    case NetOp::State:
+      ui_state_finished(res.index, res.ok, res.ok ? res.value : nullptr);
+      break;
+    case NetOp::Weather:
+      ui_set_weather(res.ok, res.temp_c, res.code);
+      ui_set_forecast(res.ok, res.days, 2);
+      if (res.ok) {
+        ui_set_week(week, res.week_count);
+      }
+      // Every 30 min; retry after 1 min on errors (last forecast stays).
+      next_weather_ms = now_ms() + (res.ok ? 1800000UL : 60000UL);
+      break;
+  }
+}
+
+void poll() {
+  NetResult res;
+  while (xQueueReceive(res_q, &res, 0) == pdTRUE) {
+    handle_result(res);
+  }
+  if (net_busy) {
+    return;
+  }
+  switch (phase) {
+    case Phase::NotConfigured:
+      break;
+    case Phase::Wifi:
+      if (wifi_connected()) {
+        console_printf("Wi-Fi connected, Miniserver %s:%d auth %s\n", LOXONE_HOST, LOXONE_PORT, auth->name());
+        phase = Phase::Loading;
+        load_painted = false;
+        ui_set_status("Wi-Fi connected");
+      } else if (wifi_failed() || now_ms() - wifi_started_ms > kWifiTimeoutMs) {
+        phase = Phase::Failed;
+        ui_show_message("Wi-Fi failed", "The panel could not join the network in panel_config.h.", true);
+      }
+      break;
+    case Phase::Loading: {
+      if (!load_painted) {
+        ui_show_message("Loading", "Reading /data/LoxAPP3.json from the Miniserver.", false);
+        load_painted = true;
+        break;
+      }
+      NetRequest r = {};
+      r.op = NetOp::Load;
+      net_post(r);
+      break;
+    }
+    case Phase::Ready: {
+      if (!wifi_connected()) {
+        ui_set_status("Wi-Fi disconnected");
+        break;
+      }
+      NetRequest r = {};
+      if (ui_take_command(&r.command)) {
+        r.op = NetOp::Command;
+        net_post(r);
+      } else if (ui_take_state(&r.state)) {
+        r.op = NetOp::State;
+        net_post(r);
+      } else if (static_cast<int32_t>(now_ms() - next_weather_ms) >= 0) {
+        r.op = NetOp::Weather;
+        net_post(r);
+      }
+      break;
+    }
+    case Phase::Failed:
+      if (ui_take_retry()) {
+        start_wifi();
+        phase = Phase::Wifi;
+        ui_show_message("Connecting", "Joining Wi-Fi.", false);
+        ui_set_status("Connecting to Wi-Fi");
+      }
+      break;
+  }
+}
+
+void halt(const char* why) {
+  console_puts(why);
+  for (;;) {
+    vTaskDelay(pdMS_TO_TICKS(1000));
+  }
+}
+
+void ui_task(void*) {
+#ifdef CONFIG_PANEL_TEST_HARNESS
+  console_begin(SERIAL_BAUD, 1024, 16384);
+#else
+  console_begin(SERIAL_BAUD, 1024, 4096);
+#endif
+  vTaskDelay(pdMS_TO_TICKS(200));
+  console_puts("ESP32-4848S040C_I_Y_1 Loxone panel (ESP-IDF)");
+  console_printf("Flash %u bytes, PSRAM %u bytes\n", static_cast<unsigned>(sys_flash_size()),
+                 static_cast<unsigned>(sys_psram_size()));
+  panel_relay_begin();
+  console_printf("Relay 1 GPIO%d off (level %d). GPIO%d and GPIO%d left unconfigured\n", kPinRelay1,
+                 kRelayOffLevel, kPinRelay2, kPinRelay3);
+  if (!panel_display_begin()) halt("Display init failed");
+  panel_touch_begin();
+  if (!panel_lvgl_start()) halt("LVGL init failed");
+  ui_init();
+
+  if (strcmp(LOXONE_AUTH, "basic") == 0) {
+    auth = &basic_auth;
+  } else if (strcmp(LOXONE_AUTH, "token") == 0) {
+    auth = &token_auth;
+  }
+
+  if (!panel_is_configured()) {
+    phase = Phase::NotConfigured;
+    console_puts(PANEL_CONFIG_PRESENT ? "panel_config.h is missing Wi-Fi, host, or user"
+                                      : "panel_config.h not found; not configured");
+    ui_show_message("Not configured", kNotConfiguredBody, false);
+    ui_set_status("Relay off");
+  } else if (auth == nullptr) {
+    phase = Phase::Failed;
+    ui_show_message("Not configured", "LOXONE_AUTH must be \"basic\" or \"token\".", false);
+  } else {
+    console_printf("Auth scheme %s\n", auth->name());
+    start_wifi();
+    phase = Phase::Wifi;
+    ui_show_message("Connecting", "Joining Wi-Fi.", false);
+    ui_set_status("Connecting to Wi-Fi");
+  }
+
+  uint32_t last_ms = now_ms();
+  for (;;) {
+    uint32_t now = now_ms();
+    lv_tick_inc(now - last_ms);
+    last_ms = now;
+    lv_timer_handler();
+    harness_poll();
+    poll();
+    lv_timer_handler();
+    vTaskDelay(pdMS_TO_TICKS(5));
+  }
+  vTaskDelete(nullptr);  // not reached
+}
+
+}  // namespace
+
+void app_start() {
+  net_q = xQueueCreate(2, sizeof(NetRequest));
+  res_q = xQueueCreate(2, sizeof(NetResult));
+  // Network and protocol work on core 0 (with the Wi-Fi stack), UI on core 1.
+  xTaskCreatePinnedToCore(net_task, "net", 12 * 1024, nullptr, 4, nullptr, 0);
+  xTaskCreatePinnedToCore(ui_task, "ui", 16 * 1024, nullptr, 5, nullptr, 1);
+}
