@@ -21,6 +21,7 @@ volatile uint32_t interactive_ms = 0;
 
 // Injection (diag task writes, UI task reads).
 volatile bool inj_active = false;
+volatile bool inj_raw = false;
 volatile int inj_x0, inj_y0, inj_x1, inj_y1;
 volatile uint32_t inj_t0, inj_dur, inj_hold;
 
@@ -35,6 +36,15 @@ void stats() {
 
 void handle(const char* line) {
   int a, b, c, d, e;
+  if (sscanf(line, "DIAGRAW %d %d", &a, &b) == 2) {
+    inj_x0 = a; inj_x1 = a; inj_y0 = b; inj_y1 = b; inj_dur = 120; inj_hold = 0;
+    inj_raw = true;
+    inj_t0 = now_ms();
+    inj_active = true;
+    console_puts("DIAG OK");
+    return;
+  }
+  inj_raw = false;
   if (sscanf(line, "DIAGSWIPE %d %d %d %d %d", &a, &b, &c, &d, &e) == 5) {
     inj_x0 = a; inj_y0 = b; inj_x1 = c; inj_y1 = d; inj_dur = e < 20 ? 20 : e; inj_hold = 0;
     inj_t0 = now_ms();
@@ -115,8 +125,9 @@ void diag_touch_poll(bool i2c_ok, bool fresh, bool pressed) {
   if (pressed) ++t_pressed;
 }
 
-bool diag_touch_inject(int* x, int* y, bool* pressed) {
+bool diag_touch_inject(int* x, int* y, bool* pressed, bool* raw) {
   if (!inj_active) return false;
+  *raw = inj_raw;
   uint32_t el = now_ms() - inj_t0;
   if (el <= inj_dur) {
     *x = inj_x0 + (inj_x1 - inj_x0) * (int)el / (int)inj_dur;

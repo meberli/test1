@@ -179,14 +179,26 @@ bool gt_write8(uint16_t reg, uint8_t v) {
   return i2c_master_transmit(gt911, w, 3, 50) == ESP_OK;
 }
 
+// GT911 raw (480x480) -> logical point. Same mapping as TAMC_GT911
+// ROTATION_RIGHT (display rotation 1).
+void gt_map(int raw_x, int raw_y) {
+  bool was = last_pressed;
+  last_x = raw_y;
+  last_y = kPanelHeight - raw_x;
+  last_pressed = true;
+  if (!was) console_printf("GT911 press raw %d,%d -> %d,%d\n", raw_x, raw_y, last_x, last_y);
+}
+
 void gt_poll() {
   uint8_t status = 0;
   bool ok = gt_read(0x814E, &status, 1);
   diag_touch_poll(ok, ok && (status & 0x80) != 0, ok && (status & 0x80) != 0 && (status & 0x0F) != 0);
   int ix, iy;
-  bool ip;
-  if (diag_touch_inject(&ix, &iy, &ip)) {  // driver-level injection (diag.cpp)
-    if (ip) {
+  bool ip, iraw;
+  if (diag_touch_inject(&ix, &iy, &ip, &iraw)) {  // driver-level injection (diag.cpp)
+    if (ip && iraw) {
+      gt_map(ix, iy);  // same decode path as a real GT911 report
+    } else if (ip) {
       last_x = ix;
       last_y = iy;
     }
@@ -198,14 +210,15 @@ void gt_poll() {
   if ((status & 0x80) == 0) return;  // no new report: keep the last state
   int n = status & 0x0F;
   if (n > 0 && n <= 5) {
+    // Point 1 record at 0x814F: track id, x lo/hi, y lo/hi, size lo/hi, reserved.
+    // (v0.7.0/0.7.1 read from 0x8150, one byte late: x = x_hi | y_lo << 8, so
+    // every real touch was clamped to the corner 479,0. Simulated touches
+    // bypassed this decode, so the tests never saw it.)
     uint8_t p[8];
-    if (gt_read(0x8150, p, sizeof(p))) {
+    if (gt_read(0x814F, p, sizeof(p))) {
       int raw_x = p[1] | (p[2] << 8);
       int raw_y = p[3] | (p[4] << 8);
-      // Same mapping as TAMC_GT911 ROTATION_RIGHT (display rotation 1).
-      last_x = raw_y;
-      last_y = kPanelHeight - raw_x;
-      last_pressed = true;
+      gt_map(raw_x, raw_y);
     }
   } else {
     last_pressed = false;

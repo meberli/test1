@@ -10,7 +10,9 @@
 
 void diag_start();                       // after the UI task runs
 void diag_touch_poll(bool i2c_ok, bool fresh, bool pressed);  // gt_poll
-bool diag_touch_inject(int* x, int* y, bool* pressed);        // gt_poll: true = use injected point
+// gt_poll: true = use injected point; *raw = point is in GT911 coordinates
+// (DIAGRAW x y: goes through the same decode/mapping as a real report).
+bool diag_touch_inject(int* x, int* y, bool* pressed, bool* raw);
 void diag_ui_loop(uint32_t lv_us, uint32_t poll_us, uint32_t loop_us);
 void diag_ui_first_interactive();        // home screen shown and touch read once
 

@@ -22,6 +22,7 @@ def main():
     ap.add_argument("--port", default="COM14")
     ap.add_argument("--secs", type=int, default=100)
     ap.add_argument("--tap", action="append", default=[], help="x,y@second (or x1,y1,x2,y2,ms@second swipe)")
+    ap.add_argument("--raw", action="append", default=[], help="rawx,rawy@second: GT911 coordinates (DIAGRAW)")
     ap.add_argument("--out", default="")
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--noreset", action="store_true")
@@ -32,6 +33,9 @@ def main():
     for t in a.tap:
         pts, at = t.split("@")
         taps.append((float(at), [int(v) for v in pts.split(",")]))
+    for t in a.raw:
+        pts, at = t.split("@")
+        taps.append((float(at), ["RAW"] + [int(v) for v in pts.split(",")]))
     p = serial.Serial(a.port, 115200, timeout=0.1)
     if not a.noreset:
         p.dtr = False
@@ -46,7 +50,10 @@ def main():
         for item in list(taps):
             if el >= item[0]:
                 v = item[1]
-                cmd = f"DIAGTAP {v[0]} {v[1]}\n" if len(v) == 2 else f"DIAGSWIPE {v[0]} {v[1]} {v[2]} {v[3]} {v[4]}\n"
+                if v[0] == "RAW":
+                    cmd = f"DIAGRAW {v[1]} {v[2]}\n"
+                else:
+                    cmd = f"DIAGTAP {v[0]} {v[1]}\n" if len(v) == 2 else f"DIAGSWIPE {v[0]} {v[1]} {v[2]} {v[3]} {v[4]}\n"
                 p.write(cmd.encode())
                 print(f"[{el:6.1f}] >> {cmd.strip()}")
                 taps.remove(item)
