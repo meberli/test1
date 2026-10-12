@@ -17,6 +17,7 @@ struct Ev {
   struct tm st = {};
   bool have_start = false;
   char summary[64] = {};
+  uint32_t uid = 0;
   // RRULE
   bool rrule = false;
   char freq = 0;  // D W M Y
@@ -164,6 +165,7 @@ int emit(const Ev& e, int64_t from, int64_t to, CalEvent* out, int n, int cap, u
   ce.all_day = e.all_day;
   ce.kind = kind;
   snprintf(ce.title, sizeof(ce.title), "%s", e.summary[0] != '\0' ? e.summary : "(ohne Titel)");
+  ce.uid = e.uid != 0 ? e.uid : cal_hash(ce.title);
   // All-day events count until the end of their day.
   const int64_t span = e.all_day ? 86399 : 0;
   if (!e.rrule || e.freq == 0) {
@@ -277,7 +279,9 @@ int ical_parse(char* buf, size_t len, int64_t from, int64_t to, CalEvent* out, i
     char* semi = strchr(line, ';');
     const char* params = semi != nullptr ? semi + 1 : "";
     if (semi != nullptr) *semi = '\0';
-    if (strcmp(line, "SUMMARY") == 0) {
+    if (strcmp(line, "UID") == 0) {
+      e.uid = cal_hash(value);
+    } else if (strcmp(line, "SUMMARY") == 0) {
       copy_text(e.summary, sizeof(e.summary), value);
     } else if (strcmp(line, "DTSTART") == 0) {
       bool utc = false, date_only = false;
@@ -336,6 +340,7 @@ int waste_parse_html(const char* buf, size_t len, int64_t from, int64_t to, CalE
     if (l >= sizeof(ce.title)) l = sizeof(ce.title) - 1;
     memcpy(ce.title, nm, l);
     ce.title[l] = '\0';
+    ce.uid = cal_hash(ce.title);
     if (ce.start + 86399 < from || ce.start >= to) continue;
     bool dup = false;  // the page lists each date once per view (date and type tabs)
     for (int i = 0; i < n; ++i) {
@@ -344,4 +349,12 @@ int waste_parse_html(const char* buf, size_t len, int64_t from, int64_t to, CalE
     if (!dup) n = cal_insert(out, n, cap, ce);
   }
   return n;
+}
+
+uint32_t cal_hash(const char* s, uint32_t h) {
+  for (; *s != '\0'; ++s) {
+    h ^= static_cast<uint8_t>(*s);
+    h *= 16777619u;
+  }
+  return h;
 }

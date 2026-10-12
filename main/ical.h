@@ -17,6 +17,7 @@ struct CalEvent {
   int64_t start;   // Unix seconds (all-day: local midnight)
   bool all_day;
   uint8_t kind;    // 0 = family calendar, 1 = waste collection
+  uint32_t uid;    // FNV-1a of the iCal UID (waste: of the title); reminders key on uid + start
   char title[64];  // UTF-8, truncated
 };
 
@@ -34,6 +35,8 @@ int ical_parse(char* buf, size_t len, int64_t from, int64_t to, CalEvent* out, i
 // <add-to-calendar-button name="..." startDate="YYYY-MM-DD"> entries.
 int waste_parse_html(const char* buf, size_t len, int64_t from, int64_t to, CalEvent* out, int cap,
                      LocalMktime local_mktime);
+
+uint32_t cal_hash(const char* s, uint32_t h = 2166136261u);  // FNV-1a
 
 // Sorted insert helper shared by both parsers (drops the latest when full).
 int cal_insert(CalEvent* out, int n, int cap, const CalEvent& e);

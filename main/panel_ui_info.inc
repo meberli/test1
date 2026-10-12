@@ -118,6 +118,7 @@ void info_hide_all() {
   hide(calset_root);
   hide(txt_root);
   hide(maint_root);
+  hide(remset_root);
 }
 
 void info_hide_views() {
@@ -1050,6 +1051,7 @@ void build_info_screens(lv_obj_t* screen) {
 // Once a second (clock_tick).
 void info_tick() {
   static uint32_t last = 0;
+  rem_tick(false);
   if (scr_off) return;
   if (nav == Nav::Maint) maint_refresh();
   if (now_ms() - last < 20000) return;  // relative times ("5'")

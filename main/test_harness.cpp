@@ -187,6 +187,12 @@ void handle(char* cmd) {
     console_puts("OK");
     vTaskDelay(pdMS_TO_TICKS(100));
     esp_restart();
+  } else if (sscanf(cmd, "REMTEST %d %d", &a, &b) == 2) {
+    ui_rem_test(a, b);
+    console_puts("OK");
+  } else if (strcmp(cmd, "REMCLEAR") == 0) {
+    ui_rem_clear();
+    console_puts("OK");
   } else if (strcmp(cmd, "LOCRESET") == 0) {
     ui_reset_location();
     console_puts("OK");

@@ -133,3 +133,9 @@ bool ui_take_meteo();
 void ui_meteo_done(bool ok, const MeteoNow& m);
 bool ui_take_ota(char* url, size_t n);  // "Update" tapped: URL to install
 void ui_ota_done(bool ok, const char* err);
+
+// Termin-Erinnerungen (test harness): synthetic event in `minutes` (kind 1 = all-day waste),
+// clear queue and acknowledged list, pending count.
+void ui_rem_test(int minutes, int kind);
+void ui_rem_clear();
+int ui_rem_pending();

@@ -10,6 +10,7 @@
 #include "config_load.h"
 #include "loxone_types.h"
 #include "net.h"
+#include "settings.h"
 
 namespace {
 
@@ -19,7 +20,7 @@ void set_detail(LoxoneHttpResult* result, const char* text) {
 
 // Host only. Rejects HTTPS. Strips a leading http:// and any path.
 bool normalize_host(char* out, size_t out_n, char* error, size_t error_n) {
-  const char* host = LOXONE_HOST;
+  const char* host = settings_loxone().host;
   if (strncmp(host, "https://", 8) == 0) {
     snprintf(error, error_n, "HTTPS is not implemented");
     return false;
@@ -83,7 +84,7 @@ LoxoneHttpResult loxone_get(LoxoneAuthorizer& auth, const char* path, uint8_t* b
     return result;
   }
   char url[192];
-  snprintf(url, sizeof(url), "http://%s:%d%s", host, static_cast<int>(LOXONE_PORT), path);
+  snprintf(url, sizeof(url), "http://%s:%d%s", host, static_cast<int>(settings_loxone().port), path);
 
   HttpGetResult r = http_get(url, user, password, body, cap, 20000);
   int code = r.status;

@@ -64,7 +64,7 @@ enum Section : uint8_t { kSecFav = 0, kSecLight = 1, kSecShutter = 2, kSecOther 
 enum class Nav : uint8_t {
   Home, Category, Weather, Settings, WifiList, WifiPass, Location, Display, Time,
   Cameras, CamSettings, CamId, CamSearch, CamKey,
-  Transit, Calendar, Rain, TransitSet, StationSearch, CalSet, TextEdit, Maint
+  Transit, Calendar, Rain, TransitSet, StationSearch, CalSet, TextEdit, Maint, RemSet
 };
 
 const char* kShutterLabel[2] = {"Auf", "Ab"};
@@ -224,6 +224,13 @@ bool cam_list_dump();
 lv_obj_t* set_tr_val = nullptr;
 lv_obj_t* set_cal_val = nullptr;
 lv_obj_t* set_maint_val = nullptr;
+lv_obj_t* set_rem_val = nullptr;
+lv_obj_t* remset_root = nullptr;
+void open_remset();
+void rem_tick(bool force);
+bool rem_describe(char* out, size_t n);
+void build_reminders(lv_obj_t* screen);
+bool rem_shown_now();
 void info_hide_all();
 void info_hide_views();
 void home_chips_refresh();
@@ -1001,7 +1008,7 @@ void swipe_page(int dir) {
     if (dir > 0) open_weather_day(0);
     return;
   }
-  if (nav == Nav::TransitSet || nav == Nav::CalSet || nav == Nav::Maint) {
+  if (nav == Nav::TransitSet || nav == Nav::CalSet || nav == Nav::Maint || nav == Nav::RemSet) {
     if (dir < 0) settings_back();
     return;
   }
@@ -1867,10 +1874,14 @@ void screen_off() {
     lv_timer_resume(saver_timer);
   }
   panel_backlight(clock ? kClockBacklight : disp.hint ? kHintBacklight : 0, 600);
+  rem_tick(true);
   console_printf("Screen off (saver %d hint %d)\n", disp.saver, disp.hint ? 1 : 0);
 }
 
-void hide_sleep_layer(void*) { lv_scr_load(main_screen); }
+void hide_sleep_layer(void*) {
+  lv_scr_load(main_screen);
+  rem_tick(true);
+}
 
 void screen_on() {
   scr_off = false;
@@ -2213,7 +2224,8 @@ void on_settings_row(lv_event_t* e) {
   if (which == 4) open_camset();
   if (which == 5) open_trset();
   if (which == 6) open_calset();
-  if (which == 7) open_maint();
+  if (which == 7) open_remset();
+  if (which == 8) open_maint();
 }
 
 void on_msg_wifi(lv_event_t*) {
@@ -2267,15 +2279,16 @@ void build_settings_screens(lv_obj_t* screen) {
   set_root = make_screen_root(screen, "Einstellungen");
   // Scrollable list: eight rows do not fit on one screen.
   lv_obj_t* set_list = make_list(set_root, 56, 404);
-  constexpr int kRows = 8;
+  constexpr int kRows = 9;
   const char* names[kRows] = {"WLAN", "Wetter-Ort", "Bildschirm", "Uhrzeit", "Kameras", "\xC3\x96V", "Kalender",
-                              "Wartung"};
+                              "Erinnerungen", "Wartung"};
   const char* icons[kRows] = {ICON_WIFI3, ICON_PLACE, ICON_SCREEN, ICON_SCHEDULE, ICON_VIDEOCAM, ICON_TRAIN,
-                              ICON_EVENT, ICON_MEMORY};
-  const uint32_t colors[kRows] = {kAccent, kAmber, kPurple, kGreen, kTeal, kAccent, kPurple, kOrange};
-  lv_obj_t** vals[kRows] = {&set_wifi_val, &set_loc_val, &set_disp_val, &set_time_val,
-                            &set_cam_val,  &set_tr_val,  &set_cal_val,  &set_maint_val};
-  const char* keys[kRows] = {"set:wifi", "set:loc", "set:disp", "set:time", "set:cams", "set:oev", "set:cal", "set:maint"};
+                              ICON_EVENT, ICON_NOTIFY, ICON_MEMORY};
+  const uint32_t colors[kRows] = {kAccent, kAmber, kPurple, kGreen, kTeal, kAccent, kPurple, kAmber, kOrange};
+  lv_obj_t** vals[kRows] = {&set_wifi_val, &set_loc_val, &set_disp_val, &set_time_val, &set_cam_val,
+                            &set_tr_val,   &set_cal_val, &set_rem_val,  &set_maint_val};
+  const char* keys[kRows] = {"set:wifi", "set:loc", "set:disp", "set:time", "set:cams",
+                             "set:oev",  "set:cal", "set:rem",  "set:maint"};
   for (int i = 0; i < kRows; ++i) {
     lv_obj_t* row = make_row(set_list, 72, icons[i], colors[i], on_settings_row, i);
     reg(keys[i], row);
@@ -2985,6 +2998,7 @@ void build_camera_screens(lv_obj_t* screen) {
 }
 
 #include "panel_ui_info.inc"
+#include "panel_ui_rem.inc"
 
 }  // namespace
 
@@ -3004,7 +3018,7 @@ void ui_set_week(const WeatherDetailDay* days, int count) {
 
 void ui_describe(char* out, size_t n) {
   if (!message_open && cam_describe(out, n)) return;
-  if (!message_open && info_describe(out, n)) return;
+  if (!message_open && (info_describe(out, n) || rem_describe(out, n))) return;
   if (message_open) {
     snprintf(out, n, "message");
   } else if (nav == Nav::Home) {
@@ -3332,12 +3346,14 @@ void ui_init() {
   build_info_screens(screen);
   lv_obj_move_foreground(kb);
   build_sleep_layer();
+  build_reminders(screen);
   lv_timer_create(clock_tick, 1000, nullptr);
   clock_tick(nullptr);
 }
 
 bool ui_power_touch(bool pressed) {
   if (pressed) last_activity = now_ms();
+  if (scr_off && pressed && rem_shown_now()) return true;  // the card's OK works directly; elsewhere wakes
   if (scr_off && pressed) {
     wake_swallow = true;
     screen_on();
@@ -3352,8 +3368,9 @@ bool ui_power_touch(bool pressed) {
 }
 
 void ui_power_describe(char* out, size_t n) {
-  snprintf(out, n, "scr=%s bl=%u to=%u saver=%d", scr_off ? "off" : "on",
-           static_cast<unsigned>(panel_backlight_level()), static_cast<unsigned>(scr_timeout_s), disp.saver);
+  snprintf(out, n, "scr=%s bl=%u to=%u saver=%d rem=%d", scr_off ? "off" : "on",
+           static_cast<unsigned>(panel_backlight_level()), static_cast<unsigned>(scr_timeout_s), disp.saver,
+           ui_rem_pending());
 }
 
 lv_obj_t* ui_overlay() { return scr_off ? sleep_layer : nullptr; }
@@ -3842,6 +3859,7 @@ void ui_calendar_done(bool ok, const Calendar& c) {
   }
   if (nav == Nav::Calendar) calv_refresh();
   if (nav == Nav::Home) home_chips_refresh();
+  rem_tick(true);
 }
 
 bool ui_take_meteo() {

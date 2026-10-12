@@ -105,6 +105,42 @@ bool settings_load_text(TextSetting which, char* out, size_t n, bool* own);
 bool settings_save_text(TextSetting which, const char* value);  // "" = back to the build default
 const char* settings_text_default(TextSetting which);
 
+// --- Termin-Erinnerungen ---
+// Lead presets (index): 15 min, 1 h, 3 h, 1 Tag, Vorabend 18:00, am Tag 07:00.
+// All-day events (waste) count from 07:00 on their day for the duration presets.
+constexpr int kLeadN = 6;
+struct ReminderSettings {
+  bool on;
+  bool cal;            // family calendar
+  bool waste;          // Abfallkalender
+  uint8_t lead_cal;    // preset index
+  uint8_t lead_waste;  // preset index
+};
+ReminderSettings settings_load_reminders();  // default on, cal 1 h, waste Vorabend 18:00
+bool settings_save_reminders(const ReminderSettings& r);
+// Acknowledged reminders (key = hash of event UID + start), ring of the last 48 in NVS "rem_ack".
+bool settings_reminder_acked(uint32_t key);
+bool settings_reminder_ack(uint32_t key);
+void settings_reminder_clear_acks();  // test harness
+
+// --- Secrets that a firmware without local config must keep ---
+// Copies build-time values (Wi-Fi, Loxone, Windy key, iCal URL) into NVS when
+// NVS lacks them, so an OTA update to a public, secret-free build keeps working.
+// Call once at boot before anything loads settings.
+void settings_seed_from_build();
+
+// Loxone Miniserver: NVS ("lox_host", "lox_port", "lox_user", "lox_pass", "lox_auth"),
+// else panel_config.h.
+struct LoxoneConfig {
+  char host[64];
+  uint16_t port;
+  char user[33];
+  char pass[65];
+  char auth[8];
+};
+LoxoneConfig settings_load_loxone();
+const LoxoneConfig& settings_loxone();  // loaded once (after settings_seed_from_build)
+
 // --- Backup / restore of the whole "panel" NVS namespace as JSON ---
 // Secret keys (Wi-Fi password, Windy key, iCal URL) only with secrets = true.
 // Returns the JSON length written to out (truncated output returns 0).

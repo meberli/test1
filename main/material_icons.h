@@ -12,7 +12,7 @@
 //                  keyboard_arrow_up, public, desktop_windows, videocam,
 //                  add, delete, key, train, directions_bus, event, recycling,
 //                  warning, system_update, memory, calendar_month, backup,
-//                  router, info
+//                  router, info, notifications
 //   font_icons_38 also: videocam
 //   font_icons_16: water_drop, air, wb_twilight, nights_stay, bedtime, warning,
 //                  schedule, train, directions_bus, event, recycling
@@ -62,6 +62,7 @@ LV_FONT_DECLARE(font_icons_16)
 #define ICON_EVENT "\xEE\xA1\xB8" // U+E878 (24, 16)
 #define ICON_RECYCLE "\xEE\x9D\xA0" // U+E760 (24, 16)
 #define ICON_WARNING "\xEF\x82\x83" // U+F083 (24, 16)
+#define ICON_NOTIFY "\xEE\x9F\xB4" // U+E7F4 (24)
 #define ICON_UPDATE "\xEF\x8B\x8D" // U+F2CD (24)
 #define ICON_MEMORY "\xEE\x8C\xA2" // U+E322 (24)
 #define ICON_CALENDAR "\xEE\xAF\x8C" // U+EBCC (24)

@@ -205,6 +205,10 @@ bool settings_load_windy_key(char* out, size_t n, bool* own) {
     }
   }
   snprintf(out, n, "%s", CONFIG_PANEL_WINDY_API_KEY);
+  if (out[0] == '\0' && nvs_open(kNs, NVS_READONLY, &h) == ESP_OK) {
+    if (!get_str(h, "windy_dflt", out, n)) out[0] = '\0';  // seeded from an earlier build
+    nvs_close(h);
+  }
   return out[0] != '\0';
 }
 
@@ -264,7 +268,7 @@ bool settings_save_station(int i, const Station& st) {
 namespace {
 const char* const kTextKey[kTextSettingN] = {"ical_url", "waste_url", "ota_url", "meteo_plz"};
 // Keys that never leave the panel unless the user asks for secrets.
-const char* const kSecretKeys[] = {"wifi_pass", "windy_key", "ical_url"};
+const char* const kSecretKeys[] = {"wifi_pass", "windy_key", "ical_url", "windy_dflt", "ical_dflt", "lox_pass"};
 
 bool is_secret(const char* key) {
   for (const char* k : kSecretKeys) {
@@ -298,6 +302,10 @@ bool settings_load_text(TextSetting which, char* out, size_t n, bool* own) {
     }
   }
   snprintf(out, n, "%s", settings_text_default(which));
+  if (out[0] == '\0' && which == kUrlIcal && nvs_open(kNs, NVS_READONLY, &h) == ESP_OK) {
+    if (!get_str(h, "ical_dflt", out, n)) out[0] = '\0';  // seeded from an earlier build
+    nvs_close(h);
+  }
   return out[0] != '\0';
 }
 
@@ -404,4 +412,154 @@ int settings_import_json(const char* json, size_t len) {
   nvs_commit(h);
   nvs_close(h);
   return n;
+}
+
+// --- Termin-Erinnerungen ---------------------------------------------------------
+
+ReminderSettings settings_load_reminders() {
+  ReminderSettings r = {true, true, true, 1, 4};
+  nvs_handle_t h;
+  if (nvs_open(kNs, NVS_READONLY, &h) != ESP_OK) return r;
+  uint8_t v = 0;
+  if (nvs_get_u8(h, "rem_on", &v) == ESP_OK) r.on = v != 0;
+  if (nvs_get_u8(h, "rem_src", &v) == ESP_OK) {
+    r.cal = (v & 1) != 0;
+    r.waste = (v & 2) != 0;
+  }
+  if (nvs_get_u8(h, "rem_lcal", &v) == ESP_OK && v < kLeadN) r.lead_cal = v;
+  if (nvs_get_u8(h, "rem_lwst", &v) == ESP_OK && v < kLeadN) r.lead_waste = v;
+  nvs_close(h);
+  return r;
+}
+
+bool settings_save_reminders(const ReminderSettings& r) {
+  nvs_handle_t h;
+  if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return false;
+  uint8_t src = (r.cal ? 1 : 0) | (r.waste ? 2 : 0);
+  bool ok = nvs_set_u8(h, "rem_on", r.on ? 1 : 0) == ESP_OK && nvs_set_u8(h, "rem_src", src) == ESP_OK &&
+            nvs_set_u8(h, "rem_lcal", r.lead_cal) == ESP_OK && nvs_set_u8(h, "rem_lwst", r.lead_waste) == ESP_OK &&
+            nvs_commit(h) == ESP_OK;
+  nvs_close(h);
+  return ok;
+}
+
+namespace {
+constexpr int kAckN = 48;
+struct AckRing {
+  uint32_t key[kAckN];
+  uint8_t next;
+};
+AckRing ack_ring;
+bool ack_loaded = false;
+
+void ack_load() {
+  if (ack_loaded) return;
+  ack_loaded = true;
+  memset(&ack_ring, 0, sizeof(ack_ring));
+  nvs_handle_t h;
+  if (nvs_open(kNs, NVS_READONLY, &h) != ESP_OK) return;
+  size_t sz = sizeof(ack_ring);
+  if (nvs_get_blob(h, "rem_ack", &ack_ring, &sz) != ESP_OK || sz != sizeof(ack_ring)) memset(&ack_ring, 0, sizeof(ack_ring));
+  nvs_close(h);
+  if (ack_ring.next >= kAckN) ack_ring.next = 0;
+}
+}  // namespace
+
+bool settings_reminder_acked(uint32_t key) {
+  ack_load();
+  for (uint32_t k : ack_ring.key) {
+    if (k == key && key != 0) return true;
+  }
+  return false;
+}
+
+bool settings_reminder_ack(uint32_t key) {
+  if (settings_reminder_acked(key)) return true;
+  ack_ring.key[ack_ring.next] = key;
+  ack_ring.next = static_cast<uint8_t>((ack_ring.next + 1) % kAckN);
+  nvs_handle_t h;
+  if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return false;
+  bool ok = nvs_set_blob(h, "rem_ack", &ack_ring, sizeof(ack_ring)) == ESP_OK && nvs_commit(h) == ESP_OK;
+  nvs_close(h);
+  return ok;
+}
+
+void settings_reminder_clear_acks() {
+  memset(&ack_ring, 0, sizeof(ack_ring));
+  ack_loaded = true;
+  nvs_handle_t h;
+  if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return;
+  nvs_erase_key(h, "rem_ack");
+  nvs_commit(h);
+  nvs_close(h);
+}
+
+// --- Seeding build-time secrets into NVS ---------------------------------------------
+
+namespace {
+// Writes value under key when the key is missing (or, with update, differs).
+void seed(nvs_handle_t h, const char* key, const char* value, bool update, int* written) {
+  if (value == nullptr || value[0] == '\0') return;
+  char cur[256];
+  bool have = get_str(h, key, cur, sizeof(cur));
+  if (have && (!update || strcmp(cur, value) == 0)) return;
+  if (nvs_set_str(h, key, value) == ESP_OK) ++*written;
+}
+}  // namespace
+
+void settings_seed_from_build() {
+  nvs_handle_t h;
+  if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return;
+  int n = 0;
+  // Wi-Fi and Loxone: only when NVS has no value yet (the user may have changed them).
+  char ssid[33];
+  if (!get_str(h, "wifi_ssid", ssid, sizeof(ssid)) || ssid[0] == '\0') {
+    seed(h, "wifi_ssid", WIFI_SSID, true, &n);
+    seed(h, "wifi_pass", WIFI_PASSWORD, true, &n);
+  }
+  char host[64];
+  if (!get_str(h, "lox_host", host, sizeof(host)) || host[0] == '\0') {
+    seed(h, "lox_host", LOXONE_HOST, true, &n);
+    seed(h, "lox_user", LOXONE_USER, true, &n);
+    seed(h, "lox_pass", LOXONE_PASSWORD, true, &n);
+    seed(h, "lox_auth", LOXONE_AUTH, true, &n);
+    if (LOXONE_HOST[0] != '\0') {
+      nvs_set_u16(h, "lox_port", static_cast<uint16_t>(LOXONE_PORT));
+    }
+  }
+  // Build defaults for the Windy key and iCal URL: kept as a separate "default"
+  // copy (the user's own value stays in windy_key / ical_url).
+  seed(h, "windy_dflt", CONFIG_PANEL_WINDY_API_KEY, true, &n);
+  seed(h, "ical_dflt", CONFIG_PANEL_ICAL_URL, true, &n);
+  if (n > 0) nvs_commit(h);
+  nvs_close(h);
+  printf("Settings: %d build values copied to NVS\n", n);
+}
+
+LoxoneConfig settings_load_loxone() {
+  LoxoneConfig c = {};
+  nvs_handle_t h;
+  if (nvs_open(kNs, NVS_READONLY, &h) == ESP_OK) {
+    bool ok = get_str(h, "lox_host", c.host, sizeof(c.host)) && c.host[0] != '\0';
+    if (ok) {
+      get_str(h, "lox_user", c.user, sizeof(c.user));
+      get_str(h, "lox_pass", c.pass, sizeof(c.pass));
+      if (!get_str(h, "lox_auth", c.auth, sizeof(c.auth)) || c.auth[0] == '\0') snprintf(c.auth, sizeof(c.auth), "basic");
+      c.port = 80;
+      nvs_get_u16(h, "lox_port", &c.port);
+    }
+    nvs_close(h);
+    if (ok) return c;
+  }
+  snprintf(c.host, sizeof(c.host), "%s", LOXONE_HOST);
+  c.port = static_cast<uint16_t>(LOXONE_PORT);
+  snprintf(c.user, sizeof(c.user), "%s", LOXONE_USER);
+  snprintf(c.pass, sizeof(c.pass), "%s", LOXONE_PASSWORD);
+  snprintf(c.auth, sizeof(c.auth), "%s", LOXONE_AUTH);
+  return c;
+}
+
+const LoxoneConfig& settings_loxone() {
+  static LoxoneConfig c = settings_load_loxone();
+  return c;
 }

@@ -40,7 +40,6 @@ uint32_t wifi_started_ms = 0;
 constexpr uint32_t kWifiTimeoutMs = 25000;
 constexpr size_t kStructureCap = 768 * 1024;
 
-LoxoneBasicAuthorizer basic_auth(LOXONE_USER, LOXONE_PASSWORD);
 LoxoneTokenAuthorizer token_auth;
 LoxoneAuthorizer* auth = nullptr;
 uint32_t next_weather_ms = 0;
@@ -678,7 +677,7 @@ void poll() {
       break;
     case Phase::Wifi:
       if (wifi_connected()) {
-        console_printf("Wi-Fi connected, Miniserver %s:%d auth %s\n", LOXONE_HOST, LOXONE_PORT, auth->name());
+        console_printf("Wi-Fi connected, Miniserver %s:%d auth %s\n", settings_loxone().host, settings_loxone().port, auth->name());
         phase = Phase::Loading;
         load_painted = false;
         maint_mark_valid();  // UI runs and Wi-Fi works: keep this image after an OTA update
@@ -780,13 +779,18 @@ void ui_task(void*) {
   ui_init();
   ui_set_place(g_loc.name);
 
-  if (strcmp(LOXONE_AUTH, "basic") == 0) {
+  const LoxoneConfig& lox = settings_loxone();
+  static LoxoneBasicAuthorizer basic_auth(lox.user, lox.pass);
+  WifiCreds wc;
+  bool configured = settings_load_wifi(&wc) && lox.host[0] != '\0' && lox.user[0] != '\0';
+  memset(&wc, 0, sizeof(wc));
+  if (strcmp(lox.auth, "basic") == 0) {
     auth = &basic_auth;
-  } else if (strcmp(LOXONE_AUTH, "token") == 0) {
+  } else if (strcmp(lox.auth, "token") == 0) {
     auth = &token_auth;
   }
 
-  if (!panel_is_configured()) {
+  if (!configured) {
     phase = Phase::NotConfigured;
     console_puts(PANEL_CONFIG_PRESENT ? "panel_config.h is missing Wi-Fi, host, or user"
                                       : "panel_config.h not found; not configured");
@@ -820,6 +824,7 @@ void ui_task(void*) {
 }  // namespace
 
 void app_start() {
+  settings_seed_from_build();
   g_loc = settings_load_location();
   g_found = static_cast<CamInfo*>(heap_caps_calloc(kMaxFound, sizeof(CamInfo), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   net_q = xQueueCreate(2, sizeof(NetRequest));
