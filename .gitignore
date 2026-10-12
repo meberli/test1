@@ -22,3 +22,4 @@ sdkconfig.defaults.local
 v4shots/
 v5shots/
 shot.png
+*.pyc

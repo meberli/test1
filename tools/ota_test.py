@@ -1,7 +1,7 @@
 """OTA over the maintenance web server: upload a .bin to /update and check
 that the panel reboots into the other slot.
 
-  set PANEL_IP=192.168.1.224
+  set PANEL_IP=<panel-ip>
   python tools/ota_test.py --port COM14 --bin build-test/loxone_panel.bin
 Needs the test firmware (serial harness).
 """
