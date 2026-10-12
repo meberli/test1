@@ -11,6 +11,7 @@
 
 #include "font_dejavu.h"
 #include "panel_hw.h"
+#include <esp_heap_caps.h>
 
 namespace {
 
@@ -43,7 +44,7 @@ constexpr uint32_t kCyan = 0x5AC8F5;
 constexpr uint32_t kPurple = 0xBF5AF2;
 
 enum Section : uint8_t { kSecFav = 0, kSecLight = 1, kSecShutter = 2, kSecOther = 3 };
-enum class Nav : uint8_t { Home, Category };
+enum class Nav : uint8_t { Home, Category, Weather };
 
 const char* kShutterLabel[2] = {"Auf", "Ab"};
 const char* kShutterCommand[2] = {"FullUp", "FullDown"};
@@ -67,6 +68,35 @@ lv_obj_t* cat_root = nullptr;
 lv_obj_t* weather_temp = nullptr;
 lv_obj_t* weather_deg = nullptr;
 lv_obj_t* weather_cond = nullptr;
+// Forecast panels inside the weather card: [0] Heute, [1] Morgen.
+lv_obj_t* fc_icon[2] = {nullptr, nullptr};
+// Weather day detail screen.
+lv_obj_t* wx_root = nullptr;
+lv_obj_t* wx_title = nullptr;
+lv_obj_t* wx_page = nullptr;
+lv_obj_t* wx_icon = nullptr;
+lv_obj_t* wx_temp = nullptr;
+lv_obj_t* wx_cond = nullptr;
+lv_obj_t* wx_info[3] = {nullptr, nullptr, nullptr};
+lv_obj_t* wx_hour[kWxSlots];
+lv_obj_t* wx_sicon[kWxSlots];
+lv_obj_t* wx_stemp[kWxSlots];
+lv_obj_t* wx_rainbar[kWxSlots];
+lv_obj_t* wx_smm[kWxSlots];
+lv_obj_t* wx_sprob[kWxSlots];
+lv_obj_t* wx_swind[kWxSlots];
+lv_obj_t* wx_curve = nullptr;
+lv_point_t wx_curve_pts[kWxSlots];
+lv_obj_t* wx_prev_hint = nullptr;
+lv_obj_t* wx_next_hint = nullptr;
+lv_obj_t* wx_empty = nullptr;
+WeatherDetailDay* wx_week = nullptr;  // PSRAM copy
+int wx_count = 0;
+int wx_day = 0;
+
+lv_obj_t* fc_temp[2] = {nullptr, nullptr};
+lv_obj_t* fc_rain[2] = {nullptr, nullptr};
+bool fc_have = false;
 lv_obj_t* card_btn[4] = {};
 lv_obj_t* card_sub[4] = {};
 lv_obj_t* cat_title = nullptr;
@@ -183,6 +213,94 @@ const char* empty_text(Section section) {
     default:
       return "Keine weiteren Steuerungen";
   }
+}
+
+int round_c(float v) { return static_cast<int>(v >= 0.f ? v + 0.5f : v - 0.5f); }
+
+// --- Drawn weather icons (60x48 container), by WMO weather code ----------
+enum class Sky { None, Sun, Partly, Cloud, Rain, Snow, Thunder, Fog };
+
+Sky sky_for(int code) {
+  if (code < 0) return Sky::None;
+  if (code == 0) return Sky::Sun;
+  if (code <= 2) return Sky::Partly;
+  if (code == 3) return Sky::Cloud;
+  if (code == 45 || code == 48) return Sky::Fog;
+  if ((code >= 71 && code <= 77) || code == 85 || code == 86) return Sky::Snow;
+  if (code >= 95) return Sky::Thunder;
+  if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) return Sky::Rain;
+  return Sky::Cloud;
+}
+
+int icon_pct = 100;  // scale for the drawn icons below
+int ic(int v) { return v * icon_pct / 100; }
+
+lv_obj_t* icon_blob(lv_obj_t* parent, int x, int y, int w, int h, uint32_t color, lv_opa_t opa) {
+  lv_obj_t* o = lv_obj_create(parent);
+  lv_obj_set_pos(o, ic(x), ic(y));
+  lv_obj_set_size(o, ic(w) < 2 ? 2 : ic(w), ic(h) < 2 ? 2 : ic(h));
+  lv_obj_set_style_radius(o, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(o, lv_color_hex(color), 0);
+  lv_obj_set_style_bg_opa(o, opa, 0);
+  lv_obj_set_style_border_width(o, 0, 0);
+  lv_obj_set_style_shadow_width(o, 0, 0);
+  lv_obj_set_style_pad_all(o, 0, 0);
+  lv_obj_clear_flag(o, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_clear_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+  return o;
+}
+
+void icon_cloud(lv_obj_t* p, int dx, int dy, uint32_t color) {
+  icon_blob(p, dx + 4, dy + 14, 48, 20, color, LV_OPA_COVER);
+  icon_blob(p, dx + 10, dy + 6, 22, 22, color, LV_OPA_COVER);
+  icon_blob(p, dx + 24, dy + 0, 26, 26, color, LV_OPA_COVER);
+}
+
+// Draws the icon for a WMO code into box (designed for 60x48 at 100 %).
+void weather_icon(lv_obj_t* box, int code, int pct = 100) {
+  icon_pct = pct;
+  lv_obj_clean(box);
+  Sky sky = sky_for(code);
+  switch (sky) {
+    case Sky::None:
+      break;
+    case Sky::Sun:
+      icon_blob(box, 12, 6, 36, 36, kYellow, LV_OPA_30);
+      icon_blob(box, 18, 12, 24, 24, kYellow, LV_OPA_COVER);
+      break;
+    case Sky::Partly:
+      icon_blob(box, 26, 0, 30, 30, kYellow, LV_OPA_COVER);
+      icon_cloud(box, 0, 12, 0xE5E5EA);
+      break;
+    case Sky::Cloud:
+      icon_cloud(box, 4, 6, 0xC7C7CC);
+      break;
+    case Sky::Fog:
+      for (int i = 0; i < 3; ++i) {
+        icon_blob(box, 6 + (i % 2) * 6, 10 + i * 11, 44, 6, 0xC7C7CC, LV_OPA_COVER);
+      }
+      break;
+    case Sky::Rain:
+      icon_cloud(box, 4, 0, 0xAEAEB2);
+      for (int i = 0; i < 3; ++i) {
+        icon_blob(box, 14 + i * 12, 36, 4, 11, kCyan, LV_OPA_COVER);
+      }
+      break;
+    case Sky::Snow:
+      icon_cloud(box, 4, 0, 0xD1D1D6);
+      for (int i = 0; i < 3; ++i) {
+        icon_blob(box, 13 + i * 12, 38 + (i % 2) * 4, 7, 7, 0xFFFFFF, LV_OPA_COVER);
+      }
+      break;
+    case Sky::Thunder: {
+      icon_cloud(box, 4, 0, 0x8E8E93);
+      // Bolt as two thin blobs (lv_line points would need per-icon storage).
+      icon_blob(box, 26, 30, 5, 10, kYellow, LV_OPA_COVER);
+      icon_blob(box, 22, 38, 5, 10, kYellow, LV_OPA_COVER);
+      break;
+    }
+  }
+  icon_pct = 100;
 }
 
 const char* weather_name(int code) {
@@ -642,6 +760,7 @@ void show_home() {
   nav = Nav::Home;
   page = -1;
   hide(cat_root);
+  hide(wx_root);
   hide(message);
   show(home_root);
   fill_home_cards();
@@ -658,6 +777,7 @@ void enter_section(Section section) {
   message_open = false;
   hide(message);
   hide(home_root);
+  hide(wx_root);
   show(cat_root);
   refresh_category();
   arm_visible_reads();
@@ -677,7 +797,17 @@ void back_level() {
   }
 }
 
+void refresh_weather_day();
+
 void swipe_page(int dir) {
+  if (nav == Nav::Weather) {
+    int next = wx_day + dir;
+    if (next >= 0 && next < wx_count) {
+      wx_day = next;
+      refresh_weather_day();
+    }
+    return;
+  }
   if (nav != Nav::Category) {
     return;
   }
@@ -739,6 +869,8 @@ void finish_touch() {
     // paging. Horizontal swipes page from any start position.
     if (gesture_y0 >= kScreen - kEdge && dy <= -kSwipe && ady > adx) {
       g = 1;
+    } else if (nav == Nav::Weather && dy <= -kSwipe && ady > adx + 8) {
+      g = 1;  // the day view has no vertical use, so any upward swipe goes home
     } else if (adx >= kSwipe && adx > ady + 8) {
       g = dx < 0 ? 3 : 4;
     }
@@ -867,6 +999,27 @@ void on_category(lv_event_t* event) {
   enter_section(static_cast<Section>(which));
 }
 
+void open_weather_day(int day) {
+  if (wx_root == nullptr || message_open) {
+    return;
+  }
+  nav = Nav::Weather;
+  wx_day = day < 0 ? 0 : day;
+  hide(home_root);
+  hide(cat_root);
+  show(wx_root);
+  refresh_weather_day();
+}
+
+void on_day_panel(lv_event_t* event) {
+  if (gesture_consumed) {
+    return;
+  }
+  int day = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(event)));
+  Serial.printf("Activate weather day %d\n", day);
+  open_weather_day(day);
+}
+
 void on_retry(lv_event_t*) {
   if (gesture_consumed) {
     return;
@@ -958,13 +1111,230 @@ void refresh_visible() {
   }
 }
 
+// ---- Weather day detail ---------------------------------------------------
+const char* kWeekday[7] = {"Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"};
+
+int weekday_of(int y, int m, int d) {  // 0 = Sunday (Sakamoto)
+  static const int t[] = {0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4};
+  if (m < 3) y -= 1;
+  return (y + y / 4 - y / 100 + y / 400 + t[m - 1] + d) % 7;
+}
+
+lv_obj_t* wx_label(lv_obj_t* parent, const lv_font_t* font, uint32_t color, int x, int y) {
+  lv_obj_t* l = make_label(parent, font, lv_color_hex(color));
+  lv_obj_set_pos(l, x, y);
+  return l;
+}
+
+lv_obj_t* wx_handle(lv_obj_t* parent, int x) {
+  lv_obj_t* h = lv_obj_create(parent);
+  lv_obj_set_pos(h, x, 190);
+  lv_obj_set_size(h, 5, 80);
+  lv_obj_set_style_radius(h, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(h, lv_color_hex(kText), 0);
+  lv_obj_set_style_bg_opa(h, LV_OPA_30, 0);
+  lv_obj_set_style_border_width(h, 0, 0);
+  lv_obj_clear_flag(h, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_clear_flag(h, LV_OBJ_FLAG_SCROLLABLE);
+  return h;
+}
+
+constexpr int kColW = 55;
+constexpr int kCurveTop = 94;
+constexpr int kCurveH = 44;
+constexpr int kRainBase = 196;
+constexpr int kRainH = 40;
+
+void build_weather_screen(lv_obj_t* screen) {
+  wx_root = lv_obj_create(screen);
+  lv_obj_set_pos(wx_root, 0, 0);
+  lv_obj_set_size(wx_root, kScreen, kScreen);
+  style_plain(wx_root);
+  lv_obj_clear_flag(wx_root, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(wx_root, LV_OBJ_FLAG_CLICKABLE);
+
+  wx_title = wx_label(wx_root, &font_dejavu_20, kCyan, 24, 16);
+  wx_page = make_label(wx_root, &font_dejavu_14, lv_color_hex(kTextDim));
+  lv_obj_align(wx_page, LV_ALIGN_TOP_RIGHT, -24, 22);
+
+  lv_obj_t* head = lv_obj_create(wx_root);
+  lv_obj_set_pos(head, kMargin, 50);
+  lv_obj_set_size(head, kScreen - 2 * kMargin, 124);
+  style_glass(head, 24);
+  lv_obj_clear_flag(head, LV_OBJ_FLAG_CLICKABLE);
+  wx_icon = lv_obj_create(head);
+  style_plain(wx_icon);
+  lv_obj_set_pos(wx_icon, 14, 14);
+  lv_obj_set_size(wx_icon, 72, 58);
+  lv_obj_clear_flag(wx_icon, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_clear_flag(wx_icon, LV_OBJ_FLAG_SCROLLABLE);
+  wx_temp = wx_label(head, &lv_font_montserrat_28, kText, 100, 12);
+  wx_cond = wx_label(head, &font_dejavu_14, kTextDim, 100, 50);
+  wx_empty = wx_label(head, &font_dejavu_20, kTextDim, 100, 40);
+  wx_info[0] = wx_label(head, &font_dejavu_14, kCyan, 16, 80);
+  wx_info[1] = wx_label(head, &font_dejavu_14, kText, 16, 100);
+  wx_info[2] = wx_label(head, &font_dejavu_14, kText, 236, 80);
+
+  lv_obj_t* tl = lv_obj_create(wx_root);
+  lv_obj_set_pos(tl, kMargin, 184);
+  lv_obj_set_size(tl, kScreen - 2 * kMargin, 270);
+  style_glass(tl, 24);
+  lv_obj_clear_flag(tl, LV_OBJ_FLAG_CLICKABLE);
+
+  wx_curve = lv_line_create(tl);
+  lv_obj_set_pos(wx_curve, 0, 0);
+  lv_obj_set_style_line_width(wx_curve, 3, 0);
+  lv_obj_set_style_line_color(wx_curve, lv_color_hex(kOrange), 0);
+  lv_obj_set_style_line_rounded(wx_curve, true, 0);
+
+  for (int i = 0; i < kWxSlots; ++i) {
+    int cx = i * kColW;
+    wx_hour[i] = wx_label(tl, &font_dejavu_14, kTextDim, cx, 8);
+    lv_obj_set_width(wx_hour[i], kColW);
+    lv_obj_set_style_text_align(wx_hour[i], LV_TEXT_ALIGN_CENTER, 0);
+    char h[4];
+    snprintf(h, sizeof(h), "%02d", i * 3);
+    lv_label_set_text(wx_hour[i], h);
+    wx_sicon[i] = lv_obj_create(tl);
+    style_plain(wx_sicon[i]);
+    lv_obj_set_pos(wx_sicon[i], cx + 9, 30);
+    lv_obj_set_size(wx_sicon[i], 38, 30);
+    lv_obj_clear_flag(wx_sicon[i], LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(wx_sicon[i], LV_OBJ_FLAG_SCROLLABLE);
+    wx_stemp[i] = wx_label(tl, &font_dejavu_14, kText, cx, 66);
+    lv_obj_set_width(wx_stemp[i], kColW);
+    lv_obj_set_style_text_align(wx_stemp[i], LV_TEXT_ALIGN_CENTER, 0);
+    wx_rainbar[i] = lv_obj_create(tl);
+    lv_obj_set_style_bg_color(wx_rainbar[i], lv_color_hex(kBlue), 0);
+    lv_obj_set_style_bg_opa(wx_rainbar[i], LV_OPA_80, 0);
+    lv_obj_set_style_radius(wx_rainbar[i], 4, 0);
+    lv_obj_set_style_border_width(wx_rainbar[i], 0, 0);
+    lv_obj_clear_flag(wx_rainbar[i], LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(wx_rainbar[i], LV_OBJ_FLAG_SCROLLABLE);
+    wx_smm[i] = wx_label(tl, &font_dejavu_14, kCyan, cx, 200);
+    lv_obj_set_width(wx_smm[i], kColW);
+    lv_obj_set_style_text_align(wx_smm[i], LV_TEXT_ALIGN_CENTER, 0);
+    wx_sprob[i] = wx_label(tl, &font_dejavu_14, kTextDim, cx, 220);
+    lv_obj_set_width(wx_sprob[i], kColW);
+    lv_obj_set_style_text_align(wx_sprob[i], LV_TEXT_ALIGN_CENTER, 0);
+    wx_swind[i] = wx_label(tl, &font_dejavu_14, kTextDim, cx, 240);
+    lv_obj_set_width(wx_swind[i], kColW);
+    lv_obj_set_style_text_align(wx_swind[i], LV_TEXT_ALIGN_CENTER, 0);
+  }
+
+  wx_prev_hint = wx_handle(wx_root, 5);
+  wx_next_hint = wx_handle(wx_root, 470);
+  lv_obj_t* home_hint = lv_obj_create(wx_root);
+  lv_obj_set_pos(home_hint, 200, 468);
+  lv_obj_set_size(home_hint, 80, 5);
+  lv_obj_set_style_radius(home_hint, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(home_hint, lv_color_hex(kText), 0);
+  lv_obj_set_style_bg_opa(home_hint, LV_OPA_30, 0);
+  lv_obj_set_style_border_width(home_hint, 0, 0);
+  lv_obj_clear_flag(home_hint, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_clear_flag(home_hint, LV_OBJ_FLAG_SCROLLABLE);
+  hide(wx_root);
+}
+
+void refresh_weather_day() {
+  if (wx_root == nullptr) {
+    return;
+  }
+  if (wx_count <= 0 || wx_week == nullptr) {
+    lv_label_set_text(wx_title, "Wetter");
+    lv_label_set_text(wx_page, "");
+    lv_label_set_text(wx_empty, "Noch keine Vorhersage");
+    show(wx_empty);
+    hide(wx_prev_hint);
+    hide(wx_next_hint);
+    return;
+  }
+  hide(wx_empty);
+  if (wx_day >= wx_count) wx_day = wx_count - 1;
+  const WeatherDetailDay& d = wx_week[wx_day];
+  int y = atoi(d.date), m = atoi(d.date + 5), dd = atoi(d.date + 8);
+  char buf[96];
+  const char* rel = wx_day == 0 ? "Heute" : wx_day == 1 ? "Morgen" : nullptr;
+  const char* wd = (m >= 1 && m <= 12) ? kWeekday[weekday_of(y, m, dd)] : "";
+  if (rel != nullptr) {
+    snprintf(buf, sizeof(buf), "%s \xC2\xB7 %s %d.%d.", rel, wd, dd, m);
+  } else {
+    snprintf(buf, sizeof(buf), "%s %d.%d.", wd, dd, m);
+  }
+  lv_label_set_text(wx_title, buf);
+  snprintf(buf, sizeof(buf), "%d / %d", wx_day + 1, wx_count);
+  lv_label_set_text(wx_page, buf);
+  lv_obj_align(wx_page, LV_ALIGN_TOP_RIGHT, -24, 22);
+  weather_icon(wx_icon, d.code, 115);
+  snprintf(buf, sizeof(buf), "%d\xC2\xB0 / %d\xC2\xB0", round_c(d.t_max), round_c(d.t_min));
+  lv_label_set_text(wx_temp, buf);
+  lv_label_set_text(wx_cond, weather_name(d.code));
+  snprintf(buf, sizeof(buf), "Niederschlag %.1f mm \xC2\xB7 %d %%", static_cast<double>(d.precip), d.prob_max);
+  lv_label_set_text(wx_info[0], buf);
+  snprintf(buf, sizeof(buf), "Wind max %d km/h", round_c(d.wind_max));
+  lv_label_set_text(wx_info[1], buf);
+  // Plain hyphen: the en dash is outside the font range.
+  snprintf(buf, sizeof(buf), "Sonne %s - %s", d.sunrise, d.sunset);
+  lv_label_set_text(wx_info[2], buf);
+
+  float lo = d.slot[0].temp, hi = d.slot[0].temp, rmax = 2.0f;
+  for (int i = 0; i < kWxSlots; ++i) {
+    if (d.slot[i].temp < lo) lo = d.slot[i].temp;
+    if (d.slot[i].temp > hi) hi = d.slot[i].temp;
+    if (d.slot[i].precip > rmax) rmax = d.slot[i].precip;
+  }
+  float span = hi - lo < 1.f ? 1.f : hi - lo;
+  for (int i = 0; i < kWxSlots; ++i) {
+    const WeatherSlot& s = d.slot[i];
+    weather_icon(wx_sicon[i], s.code, 62);
+    snprintf(buf, sizeof(buf), "%d\xC2\xB0", round_c(s.temp));
+    lv_label_set_text(wx_stemp[i], buf);
+    wx_curve_pts[i].x = i * kColW + kColW / 2;
+    wx_curve_pts[i].y = kCurveTop + kCurveH - static_cast<int>((s.temp - lo) / span * kCurveH);
+    int h = static_cast<int>(s.precip / rmax * kRainH + 0.5f);
+    if (s.precip > 0.f && h < 2) h = 2;
+    if (h <= 0) {
+      hide(wx_rainbar[i]);
+    } else {
+      show(wx_rainbar[i]);
+      lv_obj_set_pos(wx_rainbar[i], i * kColW + 17, kRainBase - h);
+      lv_obj_set_size(wx_rainbar[i], 20, h);
+    }
+    snprintf(buf, sizeof(buf), "%.1f", static_cast<double>(s.precip));
+    lv_label_set_text(wx_smm[i], buf);
+    snprintf(buf, sizeof(buf), "%d%%", s.prob);
+    lv_label_set_text(wx_sprob[i], buf);
+    snprintf(buf, sizeof(buf), "%d", round_c(s.wind));
+    lv_label_set_text(wx_swind[i], buf);
+  }
+  lv_line_set_points(wx_curve, wx_curve_pts, kWxSlots);
+  if (wx_day > 0) show(wx_prev_hint); else hide(wx_prev_hint);
+  if (wx_day + 1 < wx_count) show(wx_next_hint); else hide(wx_next_hint);
+}
+
 }  // namespace
+
+void ui_set_week(const WeatherDetailDay* days, int count) {
+  if (count > kWxDays) count = kWxDays;
+  if (wx_week == nullptr) {
+    wx_week = static_cast<WeatherDetailDay*>(
+        heap_caps_malloc(sizeof(WeatherDetailDay) * kWxDays, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (wx_week == nullptr) return;
+  }
+  memcpy(wx_week, days, sizeof(WeatherDetailDay) * count);
+  wx_count = count;
+  if (nav == Nav::Weather) {
+    refresh_weather_day();
+  }
+}
 
 void ui_describe(char* out, size_t n) {
   if (message_open) {
     snprintf(out, n, "message");
   } else if (nav == Nav::Home) {
     snprintf(out, n, "home");
+  } else if (nav == Nav::Weather) {
+    snprintf(out, n, "weather %d/%d", wx_day + 1, wx_count);
   } else {
     snprintf(out, n, "category %s %d/%d", section_name(current_section), section_page + 1,
              section_pages[current_section]);
@@ -1036,11 +1406,48 @@ void ui_init() {
   lv_label_set_text(weather_deg, "°");
   lv_obj_align_to(weather_deg, weather_temp, LV_ALIGN_OUT_RIGHT_TOP, 4, 2);
 
-  weather_cond = make_label(weather, &font_dejavu_20, lv_color_hex(kTextDim));
-  lv_obj_set_pos(weather_cond, 22, 118);
-  lv_obj_set_width(weather_cond, 390);
-  lv_label_set_long_mode(weather_cond, LV_LABEL_LONG_DOT);
+  weather_cond = make_label(weather, &font_dejavu_14, lv_color_hex(kTextDim));
+  lv_obj_set_pos(weather_cond, 22, 108);
+  lv_obj_set_width(weather_cond, 128);
+  lv_label_set_long_mode(weather_cond, LV_LABEL_LONG_WRAP);
   lv_label_set_text(weather_cond, "Wetter wird geladen");
+
+  // Today / tomorrow panels on the right of the card.
+  static const char* kDayName[2] = {"Heute", "Morgen"};
+  for (int d = 0; d < 2; ++d) {
+    lv_obj_t* panel = lv_obj_create(weather);
+    lv_obj_set_pos(panel, 160 + d * 136, 14);
+    lv_obj_set_size(panel, 128, 154);
+    lv_obj_set_style_bg_color(panel, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_bg_opa(panel, LV_OPA_10, 0);
+    lv_obj_set_style_radius(panel, 20, 0);
+    lv_obj_set_style_border_width(panel, 0, 0);
+    lv_obj_set_style_pad_all(panel, 0, 0);
+    lv_obj_set_style_shadow_width(panel, 0, 0);
+    lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_bg_opa(panel, LV_OPA_30, LV_STATE_PRESSED);
+    lv_obj_add_event_cb(panel, on_day_panel, LV_EVENT_CLICKED, reinterpret_cast<void*>(static_cast<intptr_t>(d)));
+    watch(panel);
+
+    lv_obj_t* name = make_label(panel, &font_dejavu_14, lv_color_hex(kTextDim));
+    lv_label_set_text(name, kDayName[d]);
+    lv_obj_align(name, LV_ALIGN_TOP_MID, 0, 8);
+
+    fc_icon[d] = lv_obj_create(panel);
+    style_plain(fc_icon[d]);
+    lv_obj_set_size(fc_icon[d], 60, 48);
+    lv_obj_align(fc_icon[d], LV_ALIGN_TOP_MID, 0, 30);
+    lv_obj_clear_flag(fc_icon[d], LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(fc_icon[d], LV_OBJ_FLAG_SCROLLABLE);
+
+    fc_temp[d] = make_label(panel, &font_dejavu_20, lv_color_hex(kText));
+    lv_label_set_text(fc_temp[d], "--");
+    lv_obj_align(fc_temp[d], LV_ALIGN_TOP_MID, 0, 88);
+
+    fc_rain[d] = make_label(panel, &font_dejavu_14, lv_color_hex(kCyan));
+    lv_label_set_text(fc_rain[d], "");
+    lv_obj_align(fc_rain[d], LV_ALIGN_TOP_MID, 0, 122);
+  }
 
   const int card_x[2] = {20, 246};
   const int card_y[2] = {214, 340};
@@ -1197,6 +1604,8 @@ void ui_init() {
 
   hide(cat_root);
 
+  build_weather_screen(screen);
+
   msg_status = make_label(screen, &font_dejavu_14, lv_color_hex(kTextDim));
   lv_obj_set_pos(msg_status, 24, 28);
   lv_obj_set_width(msg_status, 432);
@@ -1247,6 +1656,7 @@ void ui_show_message(const char* title, const char* body, bool retry) {
   message_open = true;
   hide(home_root);
   hide(cat_root);
+  hide(wx_root);
   show(msg_status);
   show(message);
 }
@@ -1286,6 +1696,36 @@ void ui_set_status(const char* text) {
   }
   if (msg_status != nullptr) {
     lv_label_set_text(msg_status, value);
+  }
+}
+
+void ui_set_forecast(bool ok, const WeatherDay* days, int count) {
+  if (fc_temp[0] == nullptr) {
+    return;
+  }
+  if (!ok) {
+    if (!fc_have) {
+      for (int d = 0; d < 2; ++d) {
+        lv_label_set_text(fc_temp[d], "--");
+        lv_label_set_text(fc_rain[d], "");
+        weather_icon(fc_icon[d], -1);
+      }
+    }
+    return;  // keep the last good forecast
+  }
+  fc_have = true;
+  for (int d = 0; d < 2; ++d) {
+    if (d >= count) {
+      break;
+    }
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%d\xC2\xB0 / %d\xC2\xB0", round_c(days[d].t_max), round_c(days[d].t_min));
+    lv_label_set_text(fc_temp[d], buf);
+    lv_obj_align(fc_temp[d], LV_ALIGN_TOP_MID, 0, 88);
+    snprintf(buf, sizeof(buf), "%.1f mm", static_cast<double>(days[d].precip));
+    lv_label_set_text(fc_rain[d], buf);
+    lv_obj_align(fc_rain[d], LV_ALIGN_TOP_MID, 0, 122);
+    weather_icon(fc_icon[d], days[d].code);
   }
 }
 

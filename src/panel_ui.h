@@ -37,3 +37,38 @@ void ui_state_finished(int index, bool ok, const char* value);
 
 // Home-screen weather for Buchs SG. code is a WMO weather code.
 void ui_set_weather(bool ok, int temp_c, int code);
+
+// Daily forecast for the home card: [0] today, [1] tomorrow.
+struct WeatherDay {
+  int code;       // WMO weather code
+  float t_max;    // deg C
+  float t_min;    // deg C
+  float precip;   // mm
+};
+// ok=false keeps the last good forecast on screen (or shows "--" if none).
+void ui_set_forecast(bool ok, const WeatherDay* days, int count);
+
+// 7-day forecast for the day detail screen (tap Heute/Morgen on home).
+constexpr int kWxDays = 7;
+constexpr int kWxSlots = 8;  // 00, 03, ... 21 h
+struct WeatherSlot {
+  int code;       // WMO code at hour+1 (middle of the slot)
+  float temp;     // deg C at the slot hour
+  float precip;   // mm over the 3 hours
+  int prob;       // max precipitation probability % over the 3 hours
+  float wind;     // max wind km/h over the 3 hours
+};
+struct WeatherDetailDay {
+  char date[11];    // YYYY-MM-DD
+  char sunrise[6];  // HH:MM
+  char sunset[6];
+  int code;
+  float t_max;
+  float t_min;
+  float precip;
+  int prob_max;
+  float wind_max;
+  WeatherSlot slot[kWxSlots];
+};
+// days must stay valid only for the call; the UI copies what it needs.
+void ui_set_week(const WeatherDetailDay* days, int count);

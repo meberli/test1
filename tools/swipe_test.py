@@ -55,6 +55,10 @@ class Tester:
                 while True:
                     line = self.p._line(deadline)
                     if line.startswith("STATE "):
+                        w = re.match(r"STATE weather (\d+)/(\d+) relay=(\d) busy=(\d)", line)
+                        if w:
+                            return {"screen": "weather", "name": "weather", "page": int(w.group(1)),
+                                    "pages": int(w.group(2)), "relay": int(w.group(3)), "busy": int(w.group(4))}
                         m = re.match(r"STATE (home|message|category (\S+) (\d+)/(\d+)) relay=(\d) busy=(\d)", line)
                         if m.group(1) == "home" or m.group(1) == "message":
                             return {"screen": m.group(1), "relay": int(m.group(5)), "busy": int(m.group(6))}
@@ -131,7 +135,7 @@ class Tester:
             exp += 1
         if direction > 0 and before["page"] > 1:
             exp -= 1
-        ok = (after["screen"] == "category" and after.get("name") == before["name"]
+        ok = (after["screen"] == before["screen"] and after.get("name") == before["name"]
               and after["page"] == exp and not self.fired() and after["relay"] == before["relay"])
         kind = f"swipe {'left ' if direction < 0 else 'right'}"
         if before["page"] == (before["pages"] if direction < 0 else 1):

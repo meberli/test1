@@ -45,15 +45,25 @@ LoxoneAuthorizer* auth = nullptr;
 uint32_t next_weather_ms = 0;
 
 // Buchs, St. Gallen. Open-Meteo needs no key. TLS is not pinned.
-bool fetch_buchs_weather(int* temp_c, int* code) {
+// One request: current conditions, 7 daily summaries and hourly values (the
+// hourly time array is filtered out; hour i of day d is index d*24+i).
+// The parsed document (~15 KB) is allocated from the heap, which puts large
+// blocks in PSRAM on this board.
+static WeatherDetailDay week[kWxDays];
+
+bool fetch_buchs_weather(int* temp_c, int* code, WeatherDay* days, int* week_count) {
   WiFiClientSecure client;
   client.setInsecure();
   HTTPClient http;
   http.setConnectTimeout(8000);
-  http.setTimeout(8000);
+  http.setTimeout(10000);
   const char* url =
       "https://api.open-meteo.com/v1/forecast?latitude=47.3925&longitude=9.4728"
-      "&current=temperature_2m,weather_code&timezone=Europe%2FZurich";
+      "&current=temperature_2m,weather_code"
+      "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,"
+      "sunrise,sunset,wind_speed_10m_max,precipitation_probability_max"
+      "&hourly=temperature_2m,precipitation,precipitation_probability,weather_code,wind_speed_10m"
+      "&timezone=Europe%2FZurich&forecast_days=7";
   if (!http.begin(client, url)) {
     return false;
   }
@@ -65,11 +75,19 @@ bool fetch_buchs_weather(int* temp_c, int* code) {
   }
   String payload = http.getString();
   http.end();
-  StaticJsonDocument<256> filter;
+  StaticJsonDocument<768> filter;
   filter["current"]["temperature_2m"] = true;
   filter["current"]["weather_code"] = true;
-  StaticJsonDocument<192> doc;
-  if (deserializeJson(doc, payload, DeserializationOption::Filter(filter))) {
+  const char* dkeys[] = {"time", "weather_code", "temperature_2m_max", "temperature_2m_min", "precipitation_sum",
+                         "sunrise", "sunset", "wind_speed_10m_max", "precipitation_probability_max"};
+  for (const char* k : dkeys) filter["daily"][k] = true;
+  const char* hkeys[] = {"temperature_2m", "precipitation", "precipitation_probability", "weather_code",
+                         "wind_speed_10m"};
+  for (const char* k : hkeys) filter["hourly"][k] = true;
+  DynamicJsonDocument doc(24576);
+  DeserializationError err = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
+  if (err) {
+    Serial.printf("Weather JSON %s (%u bytes)\n", err.c_str(), static_cast<unsigned>(payload.length()));
     return false;
   }
   JsonVariant temp = doc["current"]["temperature_2m"];
@@ -80,7 +98,54 @@ bool fetch_buchs_weather(int* temp_c, int* code) {
   float value = temp.as<float>();
   *temp_c = static_cast<int>(value >= 0.f ? value + 0.5f : value - 0.5f);
   *code = wcode.as<int>();
-  return true;
+  JsonObject daily = doc["daily"];
+  JsonObject hourly = doc["hourly"];
+  int n = 0;
+  for (int d = 0; d < kWxDays; ++d) {
+    if (daily["weather_code"][d].isNull() || daily["temperature_2m_max"][d].isNull() ||
+        daily["temperature_2m_min"][d].isNull()) {
+      break;
+    }
+    WeatherDetailDay& w = week[d];
+    memset(&w, 0, sizeof(w));
+    snprintf(w.date, sizeof(w.date), "%s", daily["time"][d] | "");
+    const char* sr = daily["sunrise"][d] | "";  // "2026-10-12T07:38"
+    const char* ss = daily["sunset"][d] | "";
+    snprintf(w.sunrise, sizeof(w.sunrise), "%s", strlen(sr) >= 16 ? sr + 11 : "--:--");
+    snprintf(w.sunset, sizeof(w.sunset), "%s", strlen(ss) >= 16 ? ss + 11 : "--:--");
+    w.code = daily["weather_code"][d].as<int>();
+    w.t_max = daily["temperature_2m_max"][d].as<float>();
+    w.t_min = daily["temperature_2m_min"][d].as<float>();
+    w.precip = daily["precipitation_sum"][d] | 0.0f;
+    w.prob_max = daily["precipitation_probability_max"][d] | 0;
+    w.wind_max = daily["wind_speed_10m_max"][d] | 0.0f;
+    for (int s = 0; s < kWxSlots; ++s) {
+      int h0 = d * 24 + s * 3;
+      WeatherSlot& sl = w.slot[s];
+      sl.temp = hourly["temperature_2m"][h0] | 0.0f;
+      sl.code = hourly["weather_code"][h0 + 1] | (hourly["weather_code"][h0] | 0);
+      for (int k = 0; k < 3; ++k) {
+        sl.precip += hourly["precipitation"][h0 + k] | 0.0f;
+        int pr = hourly["precipitation_probability"][h0 + k] | 0;
+        if (pr > sl.prob) sl.prob = pr;
+        float wi = hourly["wind_speed_10m"][h0 + k] | 0.0f;
+        if (wi > sl.wind) sl.wind = wi;
+      }
+    }
+    if (d < 2) {
+      days[d].code = w.code;
+      days[d].t_max = w.t_max;
+      days[d].t_min = w.t_min;
+      days[d].precip = w.precip;
+      Serial.printf("Forecast %s %s code %d max %.1f min %.1f rain %.1f mm\n", d == 0 ? "today" : "tomorrow",
+                    w.date, w.code, w.t_max, w.t_min, w.precip);
+    }
+    n++;
+  }
+  *week_count = n;
+  Serial.printf("Weather week %d days, JSON %u bytes, doc %u bytes\n", n, static_cast<unsigned>(payload.length()),
+                static_cast<unsigned>(doc.memoryUsage()));
+  return n >= 2;
 }
 
 const char* kNotConfiguredBody =
@@ -188,9 +253,16 @@ void poll() {
         } else if (static_cast<int32_t>(millis() - next_weather_ms) >= 0) {
           int temp_c = 0;
           int code = 0;
-          bool ok = fetch_buchs_weather(&temp_c, &code);
+          WeatherDay days[2] = {};
+          int week_count = 0;
+          bool ok = fetch_buchs_weather(&temp_c, &code, days, &week_count);
           ui_set_weather(ok, temp_c, code);
-          next_weather_ms = millis() + (ok ? 600000UL : 60000UL);
+          ui_set_forecast(ok, days, 2);
+          if (ok) {
+            ui_set_week(week, week_count);
+          }
+          // Every 30 min; retry after 1 min on errors (last forecast stays).
+          next_weather_ms = millis() + (ok ? 1800000UL : 60000UL);
           Serial.printf("Weather Buchs %s\n", ok ? "ok" : "unavailable");
         }
       }
