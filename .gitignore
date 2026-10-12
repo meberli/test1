@@ -2,3 +2,5 @@
 .vscode/
 .idea/
 include/panel_config.h
+
+__pycache__/

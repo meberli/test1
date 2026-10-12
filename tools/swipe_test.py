@@ -33,6 +33,7 @@ class Tester:
         self.passed = 0
         self.failed = []
         self.counts = {}
+        self.log = []
 
     def drain(self, secs):
         out = []

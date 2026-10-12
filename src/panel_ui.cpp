@@ -754,7 +754,36 @@ void finish_touch() {
   }
 }
 
-void watch(lv_obj_t*) {}
+// Press feedback only for taps. LVGL sets LV_STATE_PRESSED the moment a
+// finger lands (and again on every widget it slides onto), so swipes lit up
+// tiles. Every interactive widget drops that state right away and instead
+// flashes it for kFlashMs once the touch has been classified as a tap
+// (CLICKED with !gesture_consumed). No group is used, so no focus lingers.
+constexpr uint32_t kFlashMs = 120;
+
+void clear_flash(lv_timer_t* timer) {
+  lv_obj_t* obj = static_cast<lv_obj_t*>(timer->user_data);
+  lv_obj_clear_state(obj, LV_STATE_PRESSED);
+  lv_timer_del(timer);
+}
+
+void on_press_visual(lv_event_t* event) {
+  lv_obj_t* obj = lv_event_get_target(event);
+  lv_event_code_t code = lv_event_get_code(event);
+  if (code == LV_EVENT_PRESSED || code == LV_EVENT_PRESSING) {
+    lv_obj_clear_state(obj, LV_STATE_PRESSED);
+  } else if (code == LV_EVENT_CLICKED && !gesture_consumed && !lv_obj_has_flag(obj, LV_OBJ_FLAG_HIDDEN)) {
+    lv_obj_add_state(obj, LV_STATE_PRESSED);
+    lv_timer_t* timer = lv_timer_create(clear_flash, kFlashMs, obj);
+    lv_timer_set_repeat_count(timer, 1);
+  }
+}
+
+void watch(lv_obj_t* obj) {
+  lv_obj_add_event_cb(obj, on_press_visual, LV_EVENT_PRESSED, nullptr);
+  lv_obj_add_event_cb(obj, on_press_visual, LV_EVENT_PRESSING, nullptr);
+  lv_obj_add_event_cb(obj, on_press_visual, LV_EVENT_CLICKED, nullptr);
+}
 
 int control_for_slot(int slot) {
   if (page < 0 || page >= page_n) {

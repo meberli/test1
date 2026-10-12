@@ -97,8 +97,9 @@ class Panel:
                 data[off:off + len(chunk)] = chunk
                 have.add(off)
 
-    def shot(self, path, timeout=60, test=False):
-        self.s.write(b"SHOT TEST\n" if test else b"SHOT\n")
+    def shot(self, path, timeout=60, test=False, request=True):
+        if request:
+            self.s.write(b"SHOT TEST\n" if test else b"SHOT\n")
         deadline = time.time() + timeout
         while True:
             line = self._line(deadline)
