@@ -227,6 +227,7 @@ void gt_poll() {
 }
 
 constexpr uint32_t kBlMax = (1u << 10) - 1;
+constexpr uint32_t kBlPwmHz = 150;
 uint8_t bl_level = 0;
 
 lv_disp_draw_buf_t draw_buf;
@@ -284,12 +285,16 @@ void panel_touch_read(lv_indev_drv_t*, lv_indev_data_t* data) {
 bool panel_display_begin() {
   st7701_init();
   if (!rgb_begin()) return false;
-  // Backlight GPIO38 on LEDC PWM (20 kHz, 10 bit) so it can dim and fade.
+  // Backlight GPIO38 on LEDC PWM (10 bit) so it can dim and fade. GPIO38 is
+  // the EN pin of the AP3031 LED boost driver: at 20 kHz (up to v0.7.3) every
+  // level below roughly 85 % left the backlight off, so the clock savers (40 %)
+  // and the dim hint (4 %) were rendered but black. 150 Hz is the rate the
+  // ESPHome configs for this board use for working dim levels.
   ledc_timer_config_t tc = {};
   tc.speed_mode = LEDC_LOW_SPEED_MODE;
   tc.duty_resolution = LEDC_TIMER_10_BIT;
   tc.timer_num = LEDC_TIMER_0;
-  tc.freq_hz = 20000;
+  tc.freq_hz = kBlPwmHz;
   tc.clk_cfg = LEDC_AUTO_CLK;
   if (ledc_timer_config(&tc) != ESP_OK) return false;
   ledc_channel_config_t cc = {};
@@ -355,6 +360,13 @@ void panel_backlight(uint8_t percent, uint32_t fade_ms) {
 }
 
 uint8_t panel_backlight_level() { return bl_level; }
+
+void panel_bl_describe(char* out, size_t n) {
+  snprintf(out, n, "bl_set=%u%% duty=%lu/%lu freq=%luHz gpio%d", static_cast<unsigned>(bl_level),
+           static_cast<unsigned long>(ledc_get_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0)),
+           static_cast<unsigned long>(kBlMax), static_cast<unsigned long>(ledc_get_freq(LEDC_LOW_SPEED_MODE, LEDC_TIMER_0)),
+           static_cast<int>(kPinBacklight));
+}
 
 void panel_fb_stats(uint32_t* black, uint32_t* white, uint32_t* red, uint32_t* other) {
   *black = *white = *red = *other = 0;

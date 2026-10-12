@@ -78,10 +78,14 @@ void handle(const char* line) {
     // What is really in the panel framebuffer (not an LVGL snapshot).
     uint32_t black = 0, white = 0, red = 0, other = 0;
     panel_fb_stats(&black, &white, &red, &other);
-    char ui[160];
+    char ui[160], bl[96];
     ui_saver_describe(ui, sizeof(ui));
-    console_printf("DIAG FB black=%lu white=%lu red=%lu other=%lu | %s\n", (unsigned long)black, (unsigned long)white,
-                   (unsigned long)red, (unsigned long)other, ui);
+    panel_bl_describe(bl, sizeof(bl));
+    console_printf("DIAG FB black=%lu white=%lu red=%lu other=%lu | %s | %s\n", (unsigned long)black, (unsigned long)white,
+                   (unsigned long)red, (unsigned long)other, ui, bl);
+  } else if (sscanf(line, "DIAGBL %d", &a) == 1 && a >= 0 && a <= 100) {
+    panel_backlight(static_cast<uint8_t>(a), 0);  // live brightness test (next screen on/off resets it)
+    console_puts("DIAG OK");
   } else if (strcmp(line, "DIAGSTATS") == 0) {
     stats();
   }

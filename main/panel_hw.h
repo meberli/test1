@@ -18,3 +18,4 @@ void panel_relay_set(bool on);
 void panel_backlight(uint8_t percent, uint32_t fade_ms);
 uint8_t panel_backlight_level();
 void panel_fb_stats(uint32_t* black, uint32_t* white, uint32_t* red, uint32_t* other);  // sampled framebuffer
+void panel_bl_describe(char* out, size_t n);  // applied LEDC duty/frequency (DIAGFB)
