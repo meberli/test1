@@ -44,6 +44,7 @@ struct WeatherDay {
   float t_max;    // deg C
   float t_min;    // deg C
   float precip;   // mm
+  int kind;       // DayKind from weather_derive.h (icon + text)
 };
 // ok=false keeps the last good forecast on screen (or shows "--" if none).
 void ui_set_forecast(bool ok, const WeatherDay* days, int count);
@@ -52,7 +53,7 @@ void ui_set_forecast(bool ok, const WeatherDay* days, int count);
 constexpr int kWxDays = 7;
 constexpr int kWxSlots = 8;  // 00, 03, ... 21 h
 struct WeatherSlot {
-  int code;       // WMO code at hour+1 (middle of the slot)
+  int code;       // representative WMO code of the 3 hours (derive_slot_code)
   float temp;     // deg C at the slot hour
   float precip;   // mm over the 3 hours
   int prob;       // max precipitation probability % over the 3 hours
@@ -67,6 +68,7 @@ struct WeatherDetailDay {
   float t_min;
   float precip;
   int prob_max;
+  int kind;  // DayKind (derived from daytime hourly data)
   float wind_max;
   WeatherSlot slot[kWxSlots];
 };

@@ -11,6 +11,7 @@
 
 #include "font_dejavu.h"
 #include "panel_hw.h"
+#include "weather_derive.h"
 #include <esp_heap_caps.h>
 
 namespace {
@@ -218,7 +219,7 @@ const char* empty_text(Section section) {
 int round_c(float v) { return static_cast<int>(v >= 0.f ? v + 0.5f : v - 0.5f); }
 
 // --- Drawn weather icons (60x48 container), by WMO weather code ----------
-enum class Sky { None, Sun, Partly, Cloud, Rain, Snow, Thunder, Fog };
+enum class Sky { None, Sun, Partly, Mostly, Cloud, Showers, Rain, Snow, Thunder, Fog };
 
 Sky sky_for(int code) {
   if (code < 0) return Sky::None;
@@ -256,11 +257,33 @@ void icon_cloud(lv_obj_t* p, int dx, int dy, uint32_t color) {
   icon_blob(p, dx + 24, dy + 0, 26, 26, color, LV_OPA_COVER);
 }
 
+void draw_sky(lv_obj_t* box, Sky sky, int pct);
+
 // Draws the icon for a WMO code into box (designed for 60x48 at 100 %).
-void weather_icon(lv_obj_t* box, int code, int pct = 100) {
+void weather_icon(lv_obj_t* box, int code, int pct = 100) { draw_sky(box, sky_for(code), pct); }
+
+Sky sky_for_day(int kind) {
+  switch (static_cast<DayKind>(kind)) {
+    case DayKind::Sunny: return Sky::Sun;
+    case DayKind::Partly: return Sky::Partly;
+    case DayKind::MostlyCloudy: return Sky::Mostly;
+    case DayKind::Overcast: return Sky::Cloud;
+    case DayKind::Fog: return Sky::Fog;
+    case DayKind::Showers: return Sky::Showers;
+    case DayKind::Rain: return Sky::Rain;
+    case DayKind::SnowShowers:
+    case DayKind::Snow: return Sky::Snow;
+    case DayKind::Thunder: return Sky::Thunder;
+  }
+  return Sky::Cloud;
+}
+
+// Day icon from the derived DayKind (home panels, day view header).
+void day_icon(lv_obj_t* box, int kind, int pct = 100) { draw_sky(box, sky_for_day(kind), pct); }
+
+void draw_sky(lv_obj_t* box, Sky sky, int pct) {
   icon_pct = pct;
   lv_obj_clean(box);
-  Sky sky = sky_for(code);
   switch (sky) {
     case Sky::None:
       break;
@@ -271,6 +294,17 @@ void weather_icon(lv_obj_t* box, int code, int pct = 100) {
     case Sky::Partly:
       icon_blob(box, 26, 0, 30, 30, kYellow, LV_OPA_COVER);
       icon_cloud(box, 0, 12, 0xE5E5EA);
+      break;
+    case Sky::Mostly:  // small sun behind a big cloud
+      icon_blob(box, 34, 2, 20, 20, kYellow, LV_OPA_COVER);
+      icon_cloud(box, 0, 10, 0xC7C7CC);
+      break;
+    case Sky::Showers:  // sun, cloud and drops
+      icon_blob(box, 30, 0, 24, 24, kYellow, LV_OPA_COVER);
+      icon_cloud(box, 0, 4, 0xC7C7CC);
+      for (int i = 0; i < 2; ++i) {
+        icon_blob(box, 16 + i * 14, 38, 4, 10, kCyan, LV_OPA_COVER);
+      }
       break;
     case Sky::Cloud:
       icon_cloud(box, 4, 6, 0xC7C7CC);
@@ -1140,10 +1174,10 @@ lv_obj_t* wx_handle(lv_obj_t* parent, int x) {
 }
 
 constexpr int kColW = 55;
-constexpr int kCurveTop = 94;
-constexpr int kCurveH = 44;
-constexpr int kRainBase = 196;
-constexpr int kRainH = 40;
+constexpr int kCurveTop = 90;
+constexpr int kCurveH = 36;
+constexpr int kRainBase = 178;
+constexpr int kRainH = 36;
 
 void build_weather_screen(lv_obj_t* screen) {
   wx_root = lv_obj_create(screen);
@@ -1211,16 +1245,22 @@ void build_weather_screen(lv_obj_t* screen) {
     lv_obj_set_style_border_width(wx_rainbar[i], 0, 0);
     lv_obj_clear_flag(wx_rainbar[i], LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(wx_rainbar[i], LV_OBJ_FLAG_SCROLLABLE);
-    wx_smm[i] = wx_label(tl, &font_dejavu_14, kCyan, cx, 200);
+    wx_smm[i] = wx_label(tl, &font_dejavu_14, kCyan, cx, 182);
     lv_obj_set_width(wx_smm[i], kColW);
     lv_obj_set_style_text_align(wx_smm[i], LV_TEXT_ALIGN_CENTER, 0);
-    wx_sprob[i] = wx_label(tl, &font_dejavu_14, kTextDim, cx, 220);
+    wx_sprob[i] = wx_label(tl, &font_dejavu_14, kTextDim, cx, 200);
     lv_obj_set_width(wx_sprob[i], kColW);
     lv_obj_set_style_text_align(wx_sprob[i], LV_TEXT_ALIGN_CENTER, 0);
-    wx_swind[i] = wx_label(tl, &font_dejavu_14, kTextDim, cx, 240);
+    wx_swind[i] = wx_label(tl, &font_dejavu_14, kTextDim, cx, 218);
     lv_obj_set_width(wx_swind[i], kColW);
     lv_obj_set_style_text_align(wx_swind[i], LV_TEXT_ALIGN_CENTER, 0);
   }
+
+  // Row units for the three bottom rows.
+  lv_obj_t* legend = make_label(tl, &font_dejavu_14, lv_color_hex(kTextDim));
+  lv_label_set_text(legend, "Regen mm  \xC2\xB7  Wahrscheinlichkeit %  \xC2\xB7  Wind km/h");
+  lv_obj_align(legend, LV_ALIGN_BOTTOM_MID, 0, -8);
+  lv_obj_set_style_text_opa(legend, LV_OPA_70, 0);
 
   wx_prev_hint = wx_handle(wx_root, 5);
   wx_next_hint = wx_handle(wx_root, 470);
@@ -1265,10 +1305,10 @@ void refresh_weather_day() {
   snprintf(buf, sizeof(buf), "%d / %d", wx_day + 1, wx_count);
   lv_label_set_text(wx_page, buf);
   lv_obj_align(wx_page, LV_ALIGN_TOP_RIGHT, -24, 22);
-  weather_icon(wx_icon, d.code, 115);
+  day_icon(wx_icon, d.kind, 115);
   snprintf(buf, sizeof(buf), "%d\xC2\xB0 / %d\xC2\xB0", round_c(d.t_max), round_c(d.t_min));
   lv_label_set_text(wx_temp, buf);
-  lv_label_set_text(wx_cond, weather_name(d.code));
+  lv_label_set_text(wx_cond, day_kind_name(static_cast<DayKind>(d.kind)));
   snprintf(buf, sizeof(buf), "Niederschlag %.1f mm \xC2\xB7 %d %%", static_cast<double>(d.precip), d.prob_max);
   lv_label_set_text(wx_info[0], buf);
   snprintf(buf, sizeof(buf), "Wind max %d km/h", round_c(d.wind_max));
@@ -1725,7 +1765,7 @@ void ui_set_forecast(bool ok, const WeatherDay* days, int count) {
     snprintf(buf, sizeof(buf), "%.1f mm", static_cast<double>(days[d].precip));
     lv_label_set_text(fc_rain[d], buf);
     lv_obj_align(fc_rain[d], LV_ALIGN_TOP_MID, 0, 122);
-    weather_icon(fc_icon[d], days[d].code);
+    day_icon(fc_icon[d], days[d].kind);
   }
 }
 

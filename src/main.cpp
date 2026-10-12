@@ -15,6 +15,7 @@
 #include "loxone_structure.h"
 #include "panel_hw.h"
 #include "panel_ui.h"
+#include "weather_derive.h"
 #include "board_pins.h"
 #include "test_harness.h"
 
@@ -62,7 +63,7 @@ bool fetch_buchs_weather(int* temp_c, int* code, WeatherDay* days, int* week_cou
       "&current=temperature_2m,weather_code"
       "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,"
       "sunrise,sunset,wind_speed_10m_max,precipitation_probability_max"
-      "&hourly=temperature_2m,precipitation,precipitation_probability,weather_code,wind_speed_10m"
+      "&hourly=temperature_2m,precipitation,precipitation_probability,weather_code,wind_speed_10m,cloud_cover"
       "&timezone=Europe%2FZurich&forecast_days=7";
   if (!http.begin(client, url)) {
     return false;
@@ -82,7 +83,7 @@ bool fetch_buchs_weather(int* temp_c, int* code, WeatherDay* days, int* week_cou
                          "sunrise", "sunset", "wind_speed_10m_max", "precipitation_probability_max"};
   for (const char* k : dkeys) filter["daily"][k] = true;
   const char* hkeys[] = {"temperature_2m", "precipitation", "precipitation_probability", "weather_code",
-                         "wind_speed_10m"};
+                         "wind_speed_10m", "cloud_cover"};
   for (const char* k : hkeys) filter["hourly"][k] = true;
   DynamicJsonDocument doc(24576);
   DeserializationError err = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
@@ -119,11 +120,27 @@ bool fetch_buchs_weather(int* temp_c, int* code, WeatherDay* days, int* week_cou
     w.precip = daily["precipitation_sum"][d] | 0.0f;
     w.prob_max = daily["precipitation_probability_max"][d] | 0;
     w.wind_max = daily["wind_speed_10m_max"][d] | 0.0f;
+    WxHour hrs[24];
+    for (int i = 0; i < 24; ++i) {
+      int k = d * 24 + i;
+      hrs[i].code = hourly["weather_code"][k] | 0;
+      hrs[i].precip = hourly["precipitation"][k] | 0.0f;
+      hrs[i].temp = hourly["temperature_2m"][k] | 0.0f;
+      hrs[i].cloud = hourly["cloud_cover"][k] | 50.0f;
+    }
+    // Daytime window: sunrise hour .. sunset hour, else 06-21.
+    int h_rise = strlen(sr) >= 13 ? atoi(sr + 11) : 6;
+    int h_set = strlen(ss) >= 13 ? atoi(ss + 11) : 21;
+    if (h_rise < 0 || h_rise > 23 || h_set < h_rise || h_set > 23) {
+      h_rise = 6;
+      h_set = 21;
+    }
+    w.kind = static_cast<int>(derive_day(hrs + h_rise, h_set - h_rise + 1, w.precip));
     for (int s = 0; s < kWxSlots; ++s) {
       int h0 = d * 24 + s * 3;
       WeatherSlot& sl = w.slot[s];
       sl.temp = hourly["temperature_2m"][h0] | 0.0f;
-      sl.code = hourly["weather_code"][h0 + 1] | (hourly["weather_code"][h0] | 0);
+      sl.code = derive_slot_code(hrs + s * 3, 3);
       for (int k = 0; k < 3; ++k) {
         sl.precip += hourly["precipitation"][h0 + k] | 0.0f;
         int pr = hourly["precipitation_probability"][h0 + k] | 0;
@@ -137,8 +154,10 @@ bool fetch_buchs_weather(int* temp_c, int* code, WeatherDay* days, int* week_cou
       days[d].t_max = w.t_max;
       days[d].t_min = w.t_min;
       days[d].precip = w.precip;
-      Serial.printf("Forecast %s %s code %d max %.1f min %.1f rain %.1f mm\n", d == 0 ? "today" : "tomorrow",
-                    w.date, w.code, w.t_max, w.t_min, w.precip);
+      days[d].kind = w.kind;
+      Serial.printf("Forecast %s %s daily code %d -> %s, max %.1f min %.1f rain %.1f mm\n",
+                    d == 0 ? "today" : "tomorrow", w.date, w.code, day_kind_name(static_cast<DayKind>(w.kind)),
+                    w.t_max, w.t_min, w.precip);
     }
     n++;
   }
