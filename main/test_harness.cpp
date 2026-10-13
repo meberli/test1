@@ -20,6 +20,8 @@
 #include "panel_hw.h"
 #include "maint.h"
 #include "panel_ui.h"
+#include <esp_image_format.h>
+#include <esp_ota_ops.h>
 
 namespace {
 
@@ -201,6 +203,13 @@ void handle(char* cmd) {
   } else if (strncmp(cmd, "WEBIDLE ", 8) == 0) {
     maint_web_set_idle_ms(static_cast<uint32_t>(atoi(cmd + 8)) * 1000u);
     console_puts("OK");
+  } else if (strcmp(cmd, "IMGVERIFY") == 0) {
+    // Same check esp_ota_end() runs (incl. app signature) on the idle OTA slot.
+    const esp_partition_t* part = esp_ota_get_next_update_partition(nullptr);
+    esp_partition_pos_t pos = {part->address, part->size};
+    esp_image_metadata_t md = {};
+    esp_err_t e = esp_image_verify(ESP_IMAGE_VERIFY, &pos, &md);
+    console_printf("IMGVERIFY %s %s\n", part->label, esp_err_to_name(e));
   } else if (strcmp(cmd, "WASTETEST") == 0) {
     console_puts(ui_waste_test() ? "OK" : "ERR no calendar");
   } else if (strcmp(cmd, "REMCLEAR") == 0) {

@@ -202,10 +202,11 @@ esp_err_t on_restore(httpd_req_t* req) {
   char* buf = static_cast<char*>(heap_caps_malloc(kCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   if (buf == nullptr) return httpd_resp_send_500(req);
   size_t got = 0;
+  int timeouts = 0;
   while (got < req->content_len) {
     int r = httpd_req_recv(req, buf + got, req->content_len - got);
     if (r <= 0) {
-      if (r == HTTPD_SOCK_ERR_TIMEOUT) continue;
+      if (r == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts < 6) continue;
       heap_caps_free(buf);
       return ESP_FAIL;
     }
@@ -252,9 +253,12 @@ esp_err_t on_update(httpd_req_t* req) {
   size_t left = req->content_len;
   esp_err_t err = ESP_OK;
   g_ota_pct = 0;
+  int timeouts = 0;
   while (left > 0 && err == ESP_OK) {
     int r = httpd_req_recv(req, buf, left < 4096 ? left : 4096);
-    if (r == HTTPD_SOCK_ERR_TIMEOUT) continue;
+    // A vanished client must not block the (single) httpd task forever.
+    if (r == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts < 6) continue;
+    timeouts = 0;
     if (r <= 0) {
       err = ESP_FAIL;
       break;
@@ -271,8 +275,10 @@ esp_err_t on_update(httpd_req_t* req) {
   if (err != ESP_OK) {
     console_printf("Web: firmware upload failed: %s\n", esp_err_to_name(err));
     httpd_resp_set_status(req, "500 Internal Server Error");
-    char msg[80];
-    snprintf(msg, sizeof(msg), "Update fehlgeschlagen: %s", esp_err_to_name(err));
+    char msg[120];
+    snprintf(msg, sizeof(msg), "Update fehlgeschlagen: %s", err == ESP_ERR_OTA_VALIDATE_FAILED
+                                                              ? "Signatur ungueltig oder fehlt (nur signierte Releases)"
+                                                              : esp_err_to_name(err));
     return httpd_resp_sendstr(req, msg);
   }
   console_printf("Web: firmware installed in %s, restarting\n", part->label);
@@ -358,7 +364,8 @@ bool maint_ota_from_url(const char* url, char* err, size_t n) {
   e = esp_https_ota_finish(h);
   g_ota_pct = -1;
   if (e != ESP_OK) {
-    snprintf(err, n, "Abschluss: %s", esp_err_to_name(e));
+    snprintf(err, n, "%s", e == ESP_ERR_OTA_VALIDATE_FAILED ? "Signatur ungueltig - Update abgelehnt"
+                                                            : esp_err_to_name(e));
     return false;
   }
   return true;

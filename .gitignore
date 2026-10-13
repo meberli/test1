@@ -23,3 +23,9 @@ v4shots/
 v5shots/
 shot.png
 *.pyc
+
+# App signing key (never in git; CI gets it from the APP_SIGNING_KEY secret)
+secure/
+*.pem
+!tools/esp_display_signing_pub.pem
+v*shots/

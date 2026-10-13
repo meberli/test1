@@ -24,6 +24,13 @@ jobs:
           for f in sdkconfig.defaults.local main/panel_config.h include/panel_config.h; do
             if [ -e "$f" ]; then echo "::error::$f must not be in the repository"; exit 1; fi
           done
+      - name: Signing key from secret
+        shell: bash
+        env:
+          APP_SIGNING_KEY: ${{ secrets.APP_SIGNING_KEY }}
+        run: |
+          if [ -z "$APP_SIGNING_KEY" ]; then echo "::error::secret APP_SIGNING_KEY missing - release must be signed"; exit 1; fi
+          mkdir -p secure && umask 077 && printf '%s\n' "$APP_SIGNING_KEY" > secure/signing_key.pem
       - name: Build
         shell: bash
         run: |
@@ -31,10 +38,16 @@ jobs:
           . "$IDF_PATH/export.sh"
           idf.py set-target esp32s3
           idf.py build
+          espsecure verify-signature --version 2 --keyfile tools/esp_display_signing_pub.pem build/loxone_panel.bin
+          rm -f secure/signing_key.pem
           cp build/loxone_panel.bin loxone_panel.bin
           sha256sum loxone_panel.bin > loxone_panel.bin.sha256
           grep -q "^CONFIG_PANEL_WINDY_API_KEY=\"\"$" sdkconfig
           grep -q "^CONFIG_PANEL_ICAL_URL=\"\"$" sdkconfig
+      - name: Remove signing key
+        if: always()
+        shell: bash
+        run: rm -f secure/signing_key.pem
       - name: Release
         uses: softprops/action-gh-release@v2
         with:

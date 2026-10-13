@@ -14,12 +14,12 @@ def check(ok, what):
     print("PASS" if ok else "FAIL", what)
     if not ok: FAILS.append(what)
 
-def req(ip, path, pin=None, method="GET", body=None, origin=None):
+def req(ip, path, pin=None, method="GET", body=None, origin=None, timeout=15):
     r = urllib.request.Request(f"http://{ip}{path}", data=body, method=method)
     if pin is not None: r.add_header("X-Panel-Pin", pin)
     if origin: r.add_header("Origin", origin)
     try:
-        with urllib.request.urlopen(r, timeout=15) as resp:
+        with urllib.request.urlopen(r, timeout=timeout) as resp:
             return resp.status, resp.read()
     except urllib.error.HTTPError as e:
         return e.code, e.read()
