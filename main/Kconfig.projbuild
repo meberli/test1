@@ -7,6 +7,14 @@ config PANEL_TEST_HARNESS
         Line commands on the console UART for remote testing with
         tools/panel_test.py, tools/swipe_test.py and friends.
 
+config PANEL_DIAG_INJECT
+    bool "Release console: allow DIAG touch injection and runtime overrides"
+    default n
+    help
+        Without this the release image only answers read-only DIAG commands
+        (DIAGGT, DIAGFB, DIAGSTATS, DIAGSTACK). DIAGTAP/DIAGSWIPE/DIAGRAW,
+        DIAGVER, DIAGSCRTO, DIAGSAVER and DIAGBL need it (or the test harness).
+
 config PANEL_SERIAL_BAUD
     int "Console/harness baud rate after boot"
     default 460800 if PANEL_TEST_HARNESS

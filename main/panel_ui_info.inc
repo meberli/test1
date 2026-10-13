@@ -824,7 +824,7 @@ void maint_refresh() {
   MaintStatus s;
   maint_collect(&s);
   char b[64];
-  if (s.wifi) snprintf(b, sizeof(b), "%s \xC2\xB7 %d dBm", s.ssid, s.rssi);
+  if (s.wifi) snprintf(b, sizeof(b), "%s \xC2\xB7 %d dBm%s", s.ssid, s.rssi, s.rssi < -80 ? " (schwach)" : "");
   else snprintf(b, sizeof(b), "nicht verbunden");
   lv_label_set_text(maint_val[0], b);
   lv_label_set_text(maint_val[1], s.ip[0] != '\0' ? s.ip : "-");

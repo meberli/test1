@@ -1,4 +1,5 @@
 #include "panel_ui.h"
+#include "strings_de.h"
 
 #include "sys.h"
 #include "lvgl.h"
@@ -739,7 +740,7 @@ void ui_init() {
   lv_obj_set_style_bg_opa(message, 210, 0);
   watch(message);
 
-  message_title = make_label(message, &lv_font_montserrat_28, lv_color_hex(kOrange));
+  message_title = make_label(message, &font_inter_light_40, lv_color_hex(kOrange));
   lv_obj_set_width(message_title, 392);
   lv_label_set_long_mode(message_title, LV_LABEL_LONG_WRAP);
   lv_obj_align(message_title, LV_ALIGN_TOP_LEFT, 20, 16);

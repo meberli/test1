@@ -10,6 +10,7 @@
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
 #include "esp_event.h"
+#include "esp_timer.h"
 #include "esp_http_client.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
@@ -22,6 +23,32 @@ std::atomic<int> g_last_reason{0};      // last WIFI_REASON_* of a disconnect
 std::atomic<int> g_auth_fails{0};       // auth / handshake rejections since wifi_start
 std::atomic<int> g_noap_fails{0};       // "AP not found" since wifi_start
 esp_netif_t* g_netif = nullptr;
+char g_ssid[33] = "";
+// Reconnect backoff: the first 3 attempts right away (WPA3 routers often
+// refuse the first SAE try), then 2, 4, 8 ... 30 s, reset on got IP.
+int g_retry = 0;
+esp_timer_handle_t g_retry_timer = nullptr;
+void retry_cb(void*) {
+  if (!g_scanning && g_ssid[0] != '\0' && !g_connected) esp_wifi_connect();
+}
+void reconnect() {
+  int n = g_retry++;
+  if (n < 3) {
+    esp_wifi_connect();
+    return;
+  }
+  int s = (n - 3) >= 4 ? 30 : (2 << (n - 3));
+  if (s > 30) s = 30;
+  if (g_retry_timer == nullptr) {
+    esp_timer_create_args_t a = {};
+    a.callback = retry_cb;
+    a.name = "wifi_retry";
+    esp_timer_create(&a, &g_retry_timer);
+  }
+  esp_timer_stop(g_retry_timer);
+  esp_timer_start_once(g_retry_timer, static_cast<uint64_t>(s) * 1000000ULL);
+  printf("Wi-Fi retry in %d s\n", s);
+}
 // Bit 0: got IP; bit 1: a disconnect happened (waiters re-check the counters).
 constexpr EventBits_t kBitIp = 1, kBitDisc = 2;
 EventGroupHandle_t wifi_events() {
@@ -29,7 +56,6 @@ EventGroupHandle_t wifi_events() {
   static EventGroupHandle_t g = xEventGroupCreateStatic(&buf);
   return g;
 }
-char g_ssid[33] = "";
 
 bool is_auth_reason(int r) {
   return r == WIFI_REASON_AUTH_FAIL || r == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT || r == WIFI_REASON_HANDSHAKE_TIMEOUT ||
@@ -58,10 +84,11 @@ void on_event(void*, esp_event_base_t base, int32_t id, void* data) {
     printf("Wi-Fi disconnect reason %d (auth %d, no AP %d)\n", reason, g_auth_fails.load(), g_noap_fails.load());
     // Keep trying (also the saved network after a failed boot); the caller
     // decides when to give up or switch. A scan pauses the retries.
-    if (!g_scanning && g_ssid[0] != '\0') esp_wifi_connect();
+    if (!g_scanning && g_ssid[0] != '\0') reconnect();
   } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
     g_connected = true;
     g_failed = false;
+    g_retry = 0;
     xEventGroupSetBits(wifi_events(), kBitIp);
   }
 }
@@ -94,6 +121,8 @@ void wifi_start(const char* ssid, const char* password, const char* hostname) {
   g_failed = false;
   g_auth_fails = 0;
   g_noap_fails = 0;
+  g_retry = 0;
+  if (g_retry_timer != nullptr) esp_timer_stop(g_retry_timer);
   g_last_reason = 0;
   snprintf(g_ssid, sizeof(g_ssid), "%s", ssid);
   wifi_config_t wc = {};
