@@ -230,6 +230,7 @@ lv_obj_t* set_rem_val = nullptr;
 lv_obj_t* remset_root = nullptr;
 void open_remset();
 void rem_tick(bool force);
+void disp_save_flush(bool force);
 bool rem_describe(char* out, size_t n);
 void build_reminders(lv_obj_t* screen);
 bool rem_shown_now();
@@ -740,7 +741,7 @@ void ui_init() {
   lv_obj_set_style_bg_opa(message, 210, 0);
   watch(message);
 
-  message_title = make_label(message, &font_inter_light_40, lv_color_hex(kOrange));
+  message_title = make_label(message, &font_inter_20, lv_color_hex(kOrange));
   lv_obj_set_width(message_title, 392);
   lv_label_set_long_mode(message_title, LV_LABEL_LONG_WRAP);
   lv_obj_align(message_title, LV_ALIGN_TOP_LEFT, 20, 16);
