@@ -5,6 +5,11 @@ Reads the values from the gitignored sdkconfig.defaults.local and
 main/panel_config.h / include/panel_config.h and searches the image for them
 (also the iCal URL's secret path part). Prints only the setting names, never
 the values. Exit code 1 if any value is found.
+
+  python tools/check_secrets.py --generic build/loxone_panel.bin
+CI mode (clean checkout, no local values): looks for secret-shaped data
+instead (private iCal tokens, Google calendar private URLs, Windy keys
+assigned in sdkconfig).
 """
 import os
 import re
@@ -35,7 +40,33 @@ def secrets():
     return out
 
 
+GENERIC = [
+    (rb"private-[0-9a-f]{16,}", "iCal private token"),
+    (rb"calendar\.google\.com/calendar/ical/[^\0]{0,80}private", "Google iCal private URL"),
+]
+
+
+def generic(path):
+    data = open(path, "rb").read()
+    found = 0
+    for rx, name in GENERIC:
+        hit = re.search(rx, data) is not None
+        print(f"{'FOUND ' if hit else 'absent'}  {name}")
+        found += hit
+    cfg = os.path.join(os.path.dirname(os.path.abspath(path)), "..", "sdkconfig")
+    if os.path.exists(cfg):
+        for line in open(cfg, encoding="utf-8"):
+            m = re.match(r'(CONFIG_PANEL_(?:WINDY_API_KEY|ICAL_URL|WIFI_\w+|LOXONE_\w*(?:PASS|USER)\w*))="(.+)"', line.strip())
+            if m:
+                print(f"FOUND   {m.group(1)} set in sdkconfig")
+                found += 1
+    print(f"{len(data)} bytes, {found} generic finding(s)")
+    sys.exit(1 if found else 0)
+
+
 def main():
+    if sys.argv[1] == "--generic":
+        generic(sys.argv[2])
     data = open(sys.argv[1], "rb").read()
     found = 0
     s = secrets()

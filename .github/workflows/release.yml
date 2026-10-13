@@ -40,6 +40,7 @@ jobs:
           idf.py build
           espsecure verify-signature --version 2 --keyfile tools/esp_display_signing_pub.pem build/loxone_panel.bin
           rm -f secure/signing_key.pem
+          python tools/check_secrets.py --generic build/loxone_panel.bin
           cp build/loxone_panel.bin loxone_panel.bin
           sha256sum loxone_panel.bin > loxone_panel.bin.sha256
           grep -q "^CONFIG_PANEL_WINDY_API_KEY=\"\"$" sdkconfig
