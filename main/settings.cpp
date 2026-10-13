@@ -11,9 +11,102 @@
 #include "sdkconfig.h"
 #include "settings_schema.h"
 #include "sys.h"
+#include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 namespace {
 constexpr const char* kNs = "panel";
+const char* const TAG = "settings";
+
+// The single write path: every NVS write of namespace "panel" goes through a
+// Tx. Values are checked against the schema first; only if all are valid they
+// are written and committed under one mutex (UI and net task both save).
+// Values must stay alive until commit(). Logs key names only, never values.
+SemaphoreHandle_t write_mutex() {
+  static StaticSemaphore_t buf;
+  static SemaphoreHandle_t m = xSemaphoreCreateRecursiveMutexStatic(&buf);
+  return m;
+}
+
+// Bulk writers that are validated elsewhere (restore, migration, build seed,
+// test harness) take the same mutex for their whole run.
+struct WriteLock {
+  WriteLock() { xSemaphoreTakeRecursive(write_mutex(), portMAX_DELAY); }
+  ~WriteLock() { xSemaphoreGiveRecursive(write_mutex()); }
+};
+
+class Tx {
+ public:
+  bool u8(const char* key, uint8_t v) { return add(key, Op::U8, &v, v); }
+  bool u16(const char* key, uint16_t v) { return add(key, Op::U16, nullptr, v); }
+  bool str(const char* key, const char* v) { return add(key, Op::Str, v, 0); }
+  bool blob(const char* key, const void* v, size_t n) { return add(key, Op::Blob, v, n); }
+  bool erase(const char* key) { return add(key, Op::Erase, nullptr, 0); }
+  bool commit() {
+    if (!ok_ || n_ == 0) return ok_;
+    xSemaphoreTakeRecursive(write_mutex(), portMAX_DELAY);
+    nvs_handle_t h;
+    bool ok = nvs_open(kNs, NVS_READWRITE, &h) == ESP_OK;
+    for (int i = 0; ok && i < n_; ++i) {
+      const Item& it = items_[i];
+      esp_err_t e = ESP_OK;
+      switch (it.op) {
+        case Op::U8: e = nvs_set_u8(h, it.key, static_cast<uint8_t>(it.num)); break;
+        case Op::U16: e = nvs_set_u16(h, it.key, static_cast<uint16_t>(it.num)); break;
+        case Op::Str: e = nvs_set_str(h, it.key, static_cast<const char*>(it.ptr)); break;
+        case Op::Blob: e = nvs_set_blob(h, it.key, it.ptr, it.num); break;
+        case Op::Erase:
+          e = nvs_erase_key(h, it.key);
+          if (e == ESP_ERR_NVS_NOT_FOUND) e = ESP_OK;
+          break;
+      }
+      if (e != ESP_OK) {
+        ESP_LOGE(TAG, "write %s: %s", it.key, esp_err_to_name(e));
+        ok = false;
+      }
+    }
+    if (ok) ok = nvs_commit(h) == ESP_OK;
+    nvs_close(h);
+    xSemaphoreGiveRecursive(write_mutex());
+    return ok;
+  }
+
+ private:
+  enum class Op : uint8_t { U8, U16, Str, Blob, Erase };
+  struct Item {
+    const char* key;
+    Op op;
+    const void* ptr;
+    size_t num;
+  };
+  bool add(const char* key, Op op, const void* ptr, size_t num) {
+    if (!ok_) return false;
+    const KeySpec* ks = schema_find(key);
+    const char* why = "nicht im Schema";
+    bool valid = ks != nullptr && n_ < kMax;
+    if (valid) {
+      switch (op) {
+        case Op::U8: valid = ks->type == KeyType::U8 && schema_check_int(*ks, static_cast<long long>(num), &why); ptr = nullptr; break;
+        case Op::U16: valid = ks->type == KeyType::U16 && schema_check_int(*ks, static_cast<long long>(num), &why); break;
+        case Op::Str: valid = ks->type == KeyType::Str && ptr != nullptr && schema_check_str(*ks, static_cast<const char*>(ptr), &why); break;
+        case Op::Blob: valid = ks->type == KeyType::Blob && schema_check_blob(*ks, static_cast<const uint8_t*>(ptr), num, &why); break;
+        case Op::Erase: break;
+      }
+    }
+    if (!valid) {
+      ESP_LOGW(TAG, "%s rejected: %s", key, why);
+      ok_ = false;
+      return false;
+    }
+    items_[n_++] = {key, op, ptr, num};
+    return true;
+  }
+  static constexpr int kMax = 12;
+  Item items_[kMax];
+  int n_ = 0;
+  bool ok_ = true;
+};
 
 bool get_str(nvs_handle_t h, const char* key, char* out, size_t n) {
   size_t len = n;
@@ -49,12 +142,12 @@ bool settings_load_wifi(WifiCreds* out) {
 }
 
 bool settings_save_wifi(const WifiCreds& c) {
-  nvs_handle_t h;
-  if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return false;
-  bool ok = nvs_set_str(h, "wifi_ssid", c.ssid) == ESP_OK && nvs_set_str(h, "wifi_pass", c.pass) == ESP_OK &&
-            nvs_set_u8(h, "wifi_seeded", 1) == ESP_OK && nvs_commit(h) == ESP_OK;
-  nvs_close(h);
-  return ok;
+  Tx tx;
+  if (c.ssid[0] == '\0') tx.erase("wifi_ssid");
+  else tx.str("wifi_ssid", c.ssid);
+  tx.str("wifi_pass", c.pass);
+  tx.u8("wifi_seeded", 1);
+  return tx.commit();
 }
 
 Location settings_load_location() {
@@ -74,24 +167,19 @@ Location settings_load_location() {
 }
 
 bool settings_save_location(const Location& l) {
-  nvs_handle_t h;
-  if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return false;
-  bool ok = nvs_set_str(h, "loc_name", l.name) == ESP_OK &&
-            nvs_set_blob(h, "loc_lat", &l.lat, sizeof(float)) == ESP_OK &&
-            nvs_set_blob(h, "loc_lon", &l.lon, sizeof(float)) == ESP_OK && nvs_commit(h) == ESP_OK;
-  nvs_close(h);
-  return ok;
+  Tx tx;
+  tx.str("loc_name", l.name);
+  tx.blob("loc_lat", &l.lat, sizeof(float));
+  tx.blob("loc_lon", &l.lon, sizeof(float));
+  return tx.commit();
 }
 
 bool settings_reset_location() {
-  nvs_handle_t h;
-  if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return false;
-  nvs_erase_key(h, "loc_name");
-  nvs_erase_key(h, "loc_lat");
-  nvs_erase_key(h, "loc_lon");
-  bool ok = nvs_commit(h) == ESP_OK;
-  nvs_close(h);
-  return ok;
+  Tx tx;
+  tx.erase("loc_name");
+  tx.erase("loc_lat");
+  tx.erase("loc_lon");
+  return tx.commit();
 }
 
 DisplaySettings settings_load_display() {
@@ -109,13 +197,11 @@ DisplaySettings settings_load_display() {
 }
 
 bool settings_save_display(const DisplaySettings& d) {
-  nvs_handle_t h;
-  if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return false;
-  bool ok = nvs_set_u16(h, "scr_to", d.timeout_s) == ESP_OK && nvs_set_u8(h, "scr_hint", d.hint ? 1 : 0) == ESP_OK &&
-            nvs_set_u8(h, "scr_saver", d.saver) == ESP_OK &&
-            nvs_commit(h) == ESP_OK;
-  nvs_close(h);
-  return ok;
+  Tx tx;
+  tx.u16("scr_to", d.timeout_s);
+  tx.u8("scr_hint", d.hint ? 1 : 0);
+  tx.u8("scr_saver", d.saver);
+  return tx.commit();
 }
 
 TimeSettings settings_default_time() {
@@ -139,12 +225,11 @@ TimeSettings settings_load_time() {
 }
 
 bool settings_save_time(const TimeSettings& t) {
-  nvs_handle_t h;
-  if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return false;
-  bool ok = nvs_set_str(h, "ntp_srv", t.server) == ESP_OK && nvs_set_str(h, "tz_name", t.tz_name) == ESP_OK &&
-            nvs_set_str(h, "tz_posix", t.tz) == ESP_OK && nvs_commit(h) == ESP_OK;
-  nvs_close(h);
-  return ok;
+  Tx tx;
+  tx.str("ntp_srv", t.server);
+  tx.str("tz_name", t.tz_name);
+  tx.str("tz_posix", t.tz);
+  return tx.commit();
 }
 
 namespace {
@@ -189,14 +274,11 @@ bool settings_save_cams(const Webcam* cams, int n) {
   if (n < 0 || n > kMaxCams) return false;
   uint32_t ids[kMaxCams];
   for (int i = 0; i < n; ++i) ids[i] = cams[i].id;
-  nvs_handle_t h;
-  if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return false;
-  bool ok = true;
-  if (n > 0) ok = nvs_set_blob(h, "cam_ids", ids, n * sizeof(uint32_t)) == ESP_OK;
-  else nvs_erase_key(h, "cam_ids");
-  ok = ok && nvs_set_u8(h, "cams_n", static_cast<uint8_t>(n)) == ESP_OK && nvs_commit(h) == ESP_OK;
-  nvs_close(h);
-  return ok;
+  Tx tx;
+  if (n > 0) tx.blob("cam_ids", ids, n * sizeof(uint32_t));
+  else tx.erase("cam_ids");
+  tx.u8("cams_n", static_cast<uint8_t>(n));
+  return tx.commit();
 }
 
 bool settings_load_windy_key(char* out, size_t n, bool* own) {
@@ -220,17 +302,10 @@ bool settings_load_windy_key(char* out, size_t n, bool* own) {
 }
 
 bool settings_save_windy_key(const char* key) {
-  nvs_handle_t h;
-  if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return false;
-  if (key == nullptr || key[0] == '\0') {
-    nvs_erase_key(h, "windy_key");
-  } else if (nvs_set_str(h, "windy_key", key) != ESP_OK) {
-    nvs_close(h);
-    return false;
-  }
-  bool ok = nvs_commit(h) == ESP_OK;
-  nvs_close(h);
-  return ok;
+  Tx tx;
+  if (key == nullptr || key[0] == '\0') tx.erase("windy_key");
+  else tx.str("windy_key", key);
+  return tx.commit();
 }
 
 void settings_mask_key(const char* key, char* out, size_t n) {
@@ -262,14 +337,18 @@ void settings_load_stations(Station* out) {
 
 bool settings_save_station(int i, const Station& st) {
   if (i < 0 || i >= kStationN) return false;
-  nvs_handle_t h;
-  if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return false;
   char kid[8], kname[10];
   snprintf(kid, sizeof(kid), "st%d_id", i);
   snprintf(kname, sizeof(kname), "st%d_name", i);
-  bool ok = nvs_set_str(h, kid, st.id) == ESP_OK && nvs_set_str(h, kname, st.name) == ESP_OK && nvs_commit(h) == ESP_OK;
-  nvs_close(h);
-  return ok;
+  Tx tx;
+  if (st.id[0] == '\0') {
+    tx.erase(kid);
+    tx.erase(kname);
+  } else {
+    tx.str(kid, st.id);
+    tx.str(kname, st.name);
+  }
+  return tx.commit();
 }
 
 namespace {
@@ -309,22 +388,10 @@ bool settings_load_text(TextSetting which, char* out, size_t n, bool* own) {
 
 bool settings_save_text(TextSetting which, const char* value) {
   if (which >= kTextSettingN) return false;
-  if (value != nullptr && value[0] != '\0') {
-    const KeySpec* ks = schema_find(kTextKey[which]);
-    const char* why = "";
-    if (ks != nullptr && !schema_check_str(*ks, value, &why)) {
-      console_printf("Setting %s rejected: %s\n", kTextKey[which], why);
-      return false;
-    }
-  }
-  nvs_handle_t h;
-  if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return false;
-  bool ok = true;
-  if (value == nullptr || value[0] == '\0') nvs_erase_key(h, kTextKey[which]);
-  else ok = nvs_set_str(h, kTextKey[which], value) == ESP_OK;
-  ok = ok && nvs_commit(h) == ESP_OK;
-  nvs_close(h);
-  return ok;
+  Tx tx;
+  if (value == nullptr || value[0] == '\0') tx.erase(kTextKey[which]);
+  else tx.str(kTextKey[which], value);
+  return tx.commit();
 }
 
 // {"format":"esp_display-settings","version":1,"cfg_ver":1,"secrets":false,
@@ -427,6 +494,7 @@ const char* type_name(KeyType t) {
 // known key rejects the whole file (nothing written); unknown keys (e.g. from a
 // newer firmware) are skipped and listed.
 int settings_import_json(const char* json, size_t len, char* report, size_t rn) {
+  WriteLock lock;
   if (report != nullptr && rn > 0) report[0] = '\0';
   auto note = [&](const char* fmt, const char* a, const char* b) {
     if (report == nullptr || rn == 0) return;
@@ -510,6 +578,7 @@ int settings_import_json(const char* json, size_t len, char* report, size_t rn) 
 }
 
 void settings_migrate() {
+  WriteLock lock;
   nvs_handle_t h;
   if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return;
   uint8_t v = 0;
@@ -553,23 +622,19 @@ uint16_t settings_load_waste_until() {
 }
 
 bool settings_save_waste_until(uint16_t minutes) {
-  if (minutes > 1440) return false;
-  nvs_handle_t h;
-  if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return false;
-  bool ok = nvs_set_u16(h, "wst_until", minutes) == ESP_OK && nvs_commit(h) == ESP_OK;
-  nvs_close(h);
-  return ok;
+  Tx tx;
+  tx.u16("wst_until", minutes);
+  return tx.commit();
 }
 
 bool settings_save_reminders(const ReminderSettings& r) {
-  nvs_handle_t h;
-  if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return false;
   uint8_t src = (r.cal ? 1 : 0) | (r.waste ? 2 : 0);
-  bool ok = nvs_set_u8(h, "rem_on", r.on ? 1 : 0) == ESP_OK && nvs_set_u8(h, "rem_src", src) == ESP_OK &&
-            nvs_set_u8(h, "rem_lcal", r.lead_cal) == ESP_OK && nvs_set_u8(h, "rem_lwst", r.lead_waste) == ESP_OK &&
-            nvs_commit(h) == ESP_OK;
-  nvs_close(h);
-  return ok;
+  Tx tx;
+  tx.u8("rem_on", r.on ? 1 : 0);
+  tx.u8("rem_src", src);
+  tx.u8("rem_lcal", r.lead_cal);
+  tx.u8("rem_lwst", r.lead_waste);
+  return tx.commit();
 }
 
 namespace {
@@ -578,6 +643,7 @@ struct AckRing {
   uint32_t key[kAckN];
   uint8_t next;
 };
+static_assert(sizeof(AckRing) == 48 * 4 + 4, "rem_ack size must match the schema (kAckBytes)");
 AckRing ack_ring;
 bool ack_loaded = false;
 
@@ -606,21 +672,17 @@ bool settings_reminder_ack(uint32_t key) {
   if (settings_reminder_acked(key)) return true;
   ack_ring.key[ack_ring.next] = key;
   ack_ring.next = static_cast<uint8_t>((ack_ring.next + 1) % kAckN);
-  nvs_handle_t h;
-  if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return false;
-  bool ok = nvs_set_blob(h, "rem_ack", &ack_ring, sizeof(ack_ring)) == ESP_OK && nvs_commit(h) == ESP_OK;
-  nvs_close(h);
-  return ok;
+  Tx tx;
+  tx.blob("rem_ack", &ack_ring, sizeof(ack_ring));
+  return tx.commit();
 }
 
 void settings_reminder_clear_acks() {
   memset(&ack_ring, 0, sizeof(ack_ring));
   ack_loaded = true;
-  nvs_handle_t h;
-  if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return;
-  nvs_erase_key(h, "rem_ack");
-  nvs_commit(h);
-  nvs_close(h);
+  Tx tx;
+  tx.erase("rem_ack");
+  tx.commit();
 }
 
 // --- Seeding build-time secrets into NVS ---------------------------------------------
@@ -637,6 +699,7 @@ void seed(nvs_handle_t h, const char* key, const char* value, bool update, int* 
 }  // namespace
 
 void settings_seed_from_build() {
+  WriteLock lock;
   nvs_handle_t h;
   if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return;
   int n = 0;
@@ -679,6 +742,7 @@ void settings_seed_from_build() {
 // Test only: forget the Wi-Fi (as after a user reset), set a password, or
 // restore the build credentials. Values are never logged.
 bool settings_test_wifi(int op, const char* arg) {
+  WriteLock lock;
   nvs_handle_t h;
   if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return false;
   bool ok = true;
