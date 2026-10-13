@@ -37,5 +37,14 @@ int maint_ota_progress();
 bool maint_web_start();
 void maint_web_stop();
 bool maint_web_running();
+// Access PIN (6 digits, new on every start); shown on the panel only.
+const char* maint_web_pin();
+// UI task, once a second: switches the server off after 15 min without an
+// authenticated request. true if it just stopped.
+bool maint_web_tick();
+// Secrets export: the browser asked, the panel must confirm (one download
+// within 60 s after "allow").
+bool maint_secrets_requested();
+void maint_secrets_answer(bool allow);
 // true once an upload installed a new image (the UI shows it and restarts).
 bool maint_restart_pending();

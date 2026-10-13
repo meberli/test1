@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <atomic>
+
 #include "clock_sync.h"
 #include "esp_app_desc.h"
 #include "esp_crt_bundle.h"
@@ -11,6 +13,7 @@
 #include "esp_https_ota.h"
 #include "esp_netif.h"
 #include "esp_ota_ops.h"
+#include "esp_random.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
@@ -22,6 +25,72 @@
 namespace {
 
 httpd_handle_t g_server = nullptr;
+
+// --- Access control ---------------------------------------------------------------
+// Every endpoint except the page itself needs the 6-digit PIN shown on the panel
+// in the X-Panel-Pin header. A custom header makes browsers send a CORS
+// preflight (which this server never allows), so other web pages cannot post
+// to the panel (CSRF). 5 wrong PINs lock the API for 60 s. The server switches
+// itself off 15 min after the last authenticated request.
+constexpr uint32_t kIdleOffMs = 15 * 60 * 1000;
+constexpr uint32_t kLockMs = 60 * 1000;
+constexpr uint32_t kGrantMs = 60 * 1000;
+constexpr int kMaxFails = 5;
+char g_pin[8] = "";
+std::atomic<uint32_t> g_last_ms{0};
+std::atomic<int> g_fails{0};
+std::atomic<uint32_t> g_lock_until{0};
+// Secrets export: requested by the browser, confirmed on the panel, then one
+// download within kGrantMs.
+std::atomic<bool> g_secrets_req{false};
+std::atomic<uint32_t> g_secrets_grant_until{0};
+
+uint32_t ms() { return static_cast<uint32_t>(esp_timer_get_time() / 1000); }
+
+bool pin_equal(const char* a, const char* b) {
+  // constant time over the PIN length
+  size_t n = strlen(b);
+  if (strlen(a) != n) return false;
+  unsigned d = 0;
+  for (size_t i = 0; i < n; ++i) d |= static_cast<unsigned>(a[i] ^ b[i]);
+  return d == 0;
+}
+
+// true if the request may proceed; otherwise a response was sent.
+bool authorized(httpd_req_t* req) {
+  uint32_t now = ms();
+  if (static_cast<int32_t>(g_lock_until.load() - now) > 0) {
+    httpd_resp_set_status(req, "429 Too Many Requests");
+    httpd_resp_sendstr(req, "Zu viele falsche PINs - bitte 1 Minute warten");
+    return false;
+  }
+  // Same-origin only (browsers send Origin on cross-site POSTs).
+  char origin[96] = "", host[64] = "";
+  if (httpd_req_get_hdr_value_str(req, "Origin", origin, sizeof(origin)) == ESP_OK &&
+      httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) == ESP_OK) {
+    const char* o = strstr(origin, "://");
+    if (o == nullptr || strcmp(o + 3, host) != 0) {
+      httpd_resp_set_status(req, "403 Forbidden");
+      httpd_resp_sendstr(req, "Fremde Herkunft abgelehnt");
+      return false;
+    }
+  }
+  char pin[12] = "";
+  if (httpd_req_get_hdr_value_str(req, "X-Panel-Pin", pin, sizeof(pin)) != ESP_OK || !pin_equal(pin, g_pin)) {
+    int f = ++g_fails;
+    if (f >= kMaxFails) {
+      g_fails = 0;
+      g_lock_until = now + kLockMs;
+    }
+    console_printf("Web: wrong or missing PIN (%d)\n", f);
+    httpd_resp_set_status(req, "401 Unauthorized");
+    httpd_resp_sendstr(req, "PIN falsch - PIN steht am Panel unter Einstellungen > Wartung");
+    return false;
+  }
+  g_fails = 0;
+  g_last_ms = now;
+  return true;
+}
 volatile int g_ota_pct = -1;
 volatile bool g_restart = false;
 
@@ -56,18 +125,28 @@ const char kPage[] =
     "#2a3448;border-radius:10px;padding:8px 14px;font-size:15px}pre{white-space:pre-wrap;font-size:13px}"
     "textarea{width:100%;height:120px;background:#131926;color:#e8ecf4;border-radius:8px}</style></head><body>"
     "<h2>esp_display Wartung</h2><section><h3>Status</h3><pre id=s>...</pre></section>"
-    "<section><h3>Einstellungen sichern</h3><a href=/backup download=esp_display-settings.json>Backup (ohne "
-    "Geheimnisse)</a> &middot; <a href='/backup?secrets=1' download=esp_display-settings-secrets.json>mit "
-    "WLAN-Passwort, API-Key und Kalender-URL</a></section>"
+    "<section><h3>PIN</h3><input id=pin inputmode=numeric maxlength=6 placeholder='PIN vom Panel'> "
+    "<button onclick=savepin()>OK</button></section>"
+    "<section><h3>Einstellungen sichern</h3><button onclick=backup(0)>Backup (ohne Geheimnisse)</button> "
+    "<button onclick=backup(1)>mit WLAN-Passwort, API-Key und Kalender-URL</button><pre id=br></pre>"
+    "<small>Mit Geheimnissen: erst am Panel erlauben, dann erneut klicken.</small></section>"
     "<section><h3>Einstellungen wiederherstellen</h3><input type=file id=rf accept=.json> "
     "<button onclick=restore()>Wiederherstellen</button><pre id=rr></pre></section>"
     "<section><h3>Firmware-Update</h3><input type=file id=ff accept=.bin> <button onclick=upload()>Hochladen und "
     "installieren</button><pre id=fr></pre></section><script>"
-    "fetch('/status').then(r=>r.json()).then(j=>s.textContent=JSON.stringify(j,null,1));"
+    "pin.value=sessionStorage.pin||'';"
+    "function H(){return{'X-Panel-Pin':pin.value}}"
+    "function savepin(){sessionStorage.pin=pin.value;st()}"
+    "async function st(){const r=await fetch('/status',{headers:H()});s.textContent=r.ok?"
+    "JSON.stringify(await r.json(),null,1):await r.text()}st();"
+    "async function backup(x){br.textContent='...';const r=await fetch('/backup'+(x?'?secrets=1':''),{headers:H()});"
+    "if(!r.ok){br.textContent=await r.text();return}const b=await r.blob(),a=document.createElement('a');"
+    "a.href=URL.createObjectURL(b);a.download=x?'esp_display-settings-secrets.json':'esp_display-settings.json';"
+    "a.click();br.textContent='gespeichert'}"
     "async function restore(){const f=rf.files[0];if(!f)return;rr.textContent='...';const r=await fetch('/restore',"
-    "{method:'POST',body:await f.text()});rr.textContent=await r.text()}"
+    "{method:'POST',headers:H(),body:await f.text()});rr.textContent=await r.text()}"
     "async function upload(){const f=ff.files[0];if(!f)return;fr.textContent='Lade hoch ('+f.size+' Bytes) ...';"
-    "const r=await fetch('/update',{method:'POST',body:f});fr.textContent=await r.text()}"
+    "const r=await fetch('/update',{method:'POST',headers:H(),body:f});fr.textContent=await r.text()}"
     "</script></body></html>";
 
 esp_err_t on_root(httpd_req_t* req) {
@@ -76,6 +155,7 @@ esp_err_t on_root(httpd_req_t* req) {
 }
 
 esp_err_t on_status(httpd_req_t* req) {
+  if (!authorized(req)) return ESP_OK;
   char buf[512];
   size_t n = status_json(buf, sizeof(buf));
   httpd_resp_set_type(req, "application/json");
@@ -83,11 +163,21 @@ esp_err_t on_status(httpd_req_t* req) {
 }
 
 esp_err_t on_backup(httpd_req_t* req) {
+  if (!authorized(req)) return ESP_OK;
   bool secrets = false;
   char q[32];
   if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK) {
     char v[4];
     secrets = httpd_query_key_value(q, "secrets", v, sizeof(v)) == ESP_OK && v[0] == '1';
+  }
+  if (secrets) {
+    uint32_t until = g_secrets_grant_until.exchange(0);  // one download per confirmation
+    if (until == 0 || static_cast<int32_t>(until - ms()) <= 0) {
+      g_secrets_req = true;
+      console_puts("Web: secrets export requested - waiting for the panel");
+      httpd_resp_set_status(req, "403 Forbidden");
+      return httpd_resp_sendstr(req, "Am Panel erlauben (Dialog), dann innerhalb 1 Minute erneut klicken");
+    }
   }
   constexpr size_t kCap = 16 * 1024;
   char* buf = static_cast<char*>(heap_caps_malloc(kCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
@@ -102,6 +192,7 @@ esp_err_t on_backup(httpd_req_t* req) {
 }
 
 esp_err_t on_restore(httpd_req_t* req) {
+  if (!authorized(req)) return ESP_OK;
   constexpr size_t kCap = 16 * 1024;
   if (req->content_len == 0 || req->content_len >= kCap) {
     httpd_resp_set_status(req, "400 Bad Request");
@@ -134,6 +225,7 @@ esp_err_t on_restore(httpd_req_t* req) {
 }
 
 esp_err_t on_update(httpd_req_t* req) {
+  if (!authorized(req)) return ESP_OK;
   const esp_partition_t* part = esp_ota_get_next_update_partition(nullptr);
   if (part == nullptr || req->content_len == 0 || req->content_len > part->size) {
     httpd_resp_set_status(req, "400 Bad Request");
@@ -264,6 +356,12 @@ bool maint_ota_from_url(const char* url, char* err, size_t n) {
 
 bool maint_web_start() {
   if (g_server != nullptr) return true;
+  snprintf(g_pin, sizeof(g_pin), "%06u", static_cast<unsigned>(esp_random() % 1000000));
+  g_fails = 0;
+  g_lock_until = 0;
+  g_secrets_req = false;
+  g_secrets_grant_until = 0;
+  g_last_ms = ms();
   httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
   cfg.core_id = 0;  // network work on core 0
   cfg.stack_size = 8192;
@@ -288,8 +386,31 @@ void maint_web_stop() {
   if (g_server == nullptr) return;
   httpd_stop(g_server);
   g_server = nullptr;
+  g_secrets_req = false;
+  g_secrets_grant_until = 0;
+  memset(g_pin, 0, sizeof(g_pin));
   console_puts("Web: maintenance server stopped");
 }
 
 bool maint_web_running() { return g_server != nullptr; }
 bool maint_restart_pending() { return g_restart; }
+
+const char* maint_web_pin() { return g_pin; }
+
+bool maint_web_tick() {
+  if (g_server == nullptr) return false;
+  if (ms() - g_last_ms.load() > kIdleOffMs) {
+    console_puts("Web: 15 min without access - switching off");
+    maint_web_stop();
+    return true;
+  }
+  return false;
+}
+
+bool maint_secrets_requested() { return g_secrets_req.load(); }
+
+void maint_secrets_answer(bool allow) {
+  g_secrets_req = false;
+  g_secrets_grant_until = allow ? ms() + kGrantMs : 0;
+  console_printf("Web: secrets export %s on the panel\n", allow ? "allowed" : "denied");
+}

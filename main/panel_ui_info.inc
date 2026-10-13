@@ -106,6 +106,8 @@ lv_obj_t* maint_root = nullptr;
 lv_obj_t* maint_val[8] = {};
 lv_obj_t* maint_web_lbl = nullptr;
 lv_obj_t* maint_web_sw = nullptr;
+lv_obj_t* web_confirm = nullptr;  // "Export mit Geheimnissen erlauben?" (main screen)
+void build_web_confirm();
 lv_obj_t* maint_ota_lbl = nullptr;
 lv_obj_t* maint_ota_title = nullptr;
 lv_obj_t* maint_url_val = nullptr;
@@ -838,7 +840,7 @@ void maint_refresh() {
   lv_label_set_text(maint_val[6], b);
   if (s.web) lv_obj_add_state(maint_web_sw, LV_STATE_CHECKED);
   else lv_obj_clear_state(maint_web_sw, LV_STATE_CHECKED);
-  if (s.web) lv_label_set_text_fmt(maint_web_lbl, "http://%s/  Backup, Restore, Upload", s.ip);
+  if (s.web) lv_label_set_text_fmt(maint_web_lbl, "http://%s/  PIN %s", s.ip, maint_web_pin());
   else lv_label_set_text(maint_web_lbl, "Backup, Restore und Upload im Browser");
   int pct = maint_ota_progress();
   if (ota_state == OtaUi::Checking && now_ms() - ota_t0 > 45000) {  // e.g. offline: never sent
@@ -1141,11 +1143,65 @@ void build_info_screens(lv_obj_t* screen) {
   lv_obj_set_width(maint_url_val, 250);
   lv_label_set_long_mode(maint_url_val, LV_LABEL_LONG_DOT);
   lv_obj_align(maint_url_val, LV_ALIGN_RIGHT_MID, -16, 0);
+  build_web_confirm();
+}
+
+void on_web_confirm(lv_event_t* e) {
+  bool allow = lv_event_get_user_data(e) != nullptr;
+  maint_secrets_answer(allow);
+  hide(web_confirm);
+}
+
+void build_web_confirm() {
+  web_confirm = lv_obj_create(lv_obj_get_screen(maint_root));  // main screen (also in screenshots)
+  lv_obj_set_size(web_confirm, kScreen - 2 * kMargin, 250);
+  lv_obj_center(web_confirm);
+  style_glass(web_confirm, 24);
+  lv_obj_set_style_border_color(web_confirm, lv_color_hex(kAmber), 0);
+  lv_obj_set_style_border_width(web_confirm, 2, 0);
+  lv_obj_set_style_pad_all(web_confirm, 20, 0);
+  lv_obj_clear_flag(web_confirm, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_t* t = make_label(web_confirm, &font_inter_sb16, lv_color_hex(kText));
+  lv_label_set_text(t, "Backup mit Geheimnissen?");
+  lv_obj_set_pos(t, 0, 0);
+  lv_obj_t* d = make_label(web_confirm, &font_inter_14, lv_color_hex(kTextDim));
+  lv_obj_set_width(d, kScreen - 2 * kMargin - 40);
+  lv_label_set_long_mode(d, LV_LABEL_LONG_WRAP);
+  lv_label_set_text(d, "Ein Browser m\xC3\xB6" "chte WLAN-Passwort, Loxone-Passwort, API-Key und Kalender-URL "
+                       "herunterladen. Nur erlauben, wenn du das selbst angefordert hast.");
+  lv_obj_set_pos(d, 0, 30);
+  const char* names[2] = {"Ablehnen", "Erlauben"};
+  const char* keys[2] = {"web:deny", "web:allow"};
+  for (int i = 0; i < 2; ++i) {
+    lv_obj_t* b = lv_btn_create(web_confirm);
+    lv_obj_set_size(b, 170, 52);
+    lv_obj_align(b, i == 0 ? LV_ALIGN_BOTTOM_LEFT : LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    lv_obj_set_style_radius(b, 16, 0);
+    lv_obj_set_style_bg_color(b, lv_color_hex(i == 0 ? kBorder : kAmber), 0);
+    lv_obj_add_event_cb(b, on_web_confirm, LV_EVENT_CLICKED, i == 0 ? nullptr : reinterpret_cast<void*>(1));
+    lv_obj_t* l = make_label(b, &font_inter_sb16, lv_color_hex(i == 0 ? kText : 0x1A1300));
+    lv_label_set_text(l, names[i]);
+    lv_obj_center(l);
+    reg(keys[i], b);
+  }
+  hide(web_confirm);
 }
 
 // Once a second (clock_tick).
 void info_tick() {
   static uint32_t last = 0;
+  if (maint_web_tick() && nav == Nav::Maint) maint_refresh();
+  if (web_confirm != nullptr) {
+    bool want = maint_secrets_requested();
+    bool shown = !lv_obj_has_flag(web_confirm, LV_OBJ_FLAG_HIDDEN);
+    if (want && !shown) {
+      if (scr_off) screen_on();
+      show(web_confirm);
+      lv_obj_move_foreground(web_confirm);
+    } else if (!want && shown) {
+      hide(web_confirm);
+    }
+  }
   rem_tick(false);
   if (scr_off) return;
   if (nav == Nav::Maint) maint_refresh();
@@ -1186,7 +1242,8 @@ bool info_describe(char* out, size_t n) {
       return true;
     }
     case Nav::Maint:
-      snprintf(out, n, "maint web=%d ota=%d otaui=%d new=%s", maint_web_running() ? 1 : 0, maint_ota_progress(),
+      snprintf(out, n, "maint web=%d pin=%s confirm=%d ota=%d otaui=%d new=%s", maint_web_running() ? 1 : 0,
+               maint_web_running() ? maint_web_pin() : "-", maint_secrets_requested() ? 1 : 0, maint_ota_progress(),
                static_cast<int>(ota_state), ota_new_ver[0] ? ota_new_ver : "-");
       return true;
     default:
