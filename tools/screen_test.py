@@ -46,8 +46,10 @@ def main():
         tap("set:disp")
         return t.state()
 
-    def set_display(timeout, hint):
+    def set_display(timeout, hint, saver=None):
         st = open_display()
+        if saver is not None and st.get("saver") != saver:
+            tap(f"saver:{saver}")
         if st.get("timeout") != timeout:
             tap(f"to:{CHOICES.index(timeout)}")
         if t.state().get("hint") != hint:
@@ -86,9 +88,13 @@ def main():
         t.go_home()
     shot("home")
     st = open_display()
-    orig = (120, 1)  # restored at the end: the defaults (2 min, hint on)
+    # The user's settings, restored at the end.
+    orig = (st.get("timeout"), st.get("hint"), st.get("saver"))
     check("open Bildschirm settings", st["screen"] == "display", st)
-    print("  before:", (st.get("timeout"), st.get("hint")))
+    print("  before:", orig)
+    # The hint / black checks below need the black screensaver (a clock
+    # saver keeps the backlight at the clock level).
+    set_display(st.get("timeout"), st.get("hint"), 0)
 
     # Persistence: 30 s, hint off, reboot, read back
     st = set_display(30, 0)
@@ -100,7 +106,7 @@ def main():
     st = open_display()
     check("settings persisted after reboot", st.get("timeout") == 30 and st.get("hint") == 0, st)
 
-    st = set_display(120, 1)
+    st = set_display(120, 1, 0)
     check("set timeout 2 min + hint on", st.get("timeout") == 120 and st.get("hint") == 1, st)
     shot("display")
     t.go_home()
@@ -159,11 +165,24 @@ def main():
     t.tap(240, 240)
     st = t.state(); check("wake from full off", st.get("scr") == "on" and st["screen"] == "home" and not t.fired(), st)
 
-    # Restore original settings
+    # Clock screensaver: dimmed backlight, clock shown
     p.cmd("SCRTO 0")
-    if orig[0] in CHOICES and orig[1] in (0, 1):
-        st = set_display(orig[0], orig[1])
-        check("restore original display settings", (st.get("timeout"), st.get("hint")) == orig, st)
+    set_display(120, 1, 1)
+    t.go_home()
+    p.cmd("SCRTO 3")
+    st = wait_off(8)
+    check("clock saver: backlight 40", st.get("scr") == "off" and st.get("bl") == 40, st)
+    t.tap(240, 240)
+    st = t.state(); check("wake from clock saver", st.get("scr") == "on" and not t.fired(), st)
+
+    # Restore the user's settings (written 1.5 s after the last tap)
+    p.cmd("SCRTO 0")
+    if orig[0] in CHOICES and orig[1] in (0, 1) and orig[2] in (0, 1, 2):
+        st = set_display(*orig)
+        time.sleep(2.5)
+        check("restore original display settings", (st.get("timeout"), st.get("hint"), st.get("saver")) == orig, st)
+    else:
+        check("original settings readable", False, orig)
     t.go_home()
     p.cmd("SCRTO 0")
 
