@@ -57,7 +57,7 @@ void stacks(bool warn_only) {
     uint32_t free_b = st[i].usStackHighWaterMark;
     // Only our own tasks: IDF system tasks (ipc, IDLE) run with small fixed stacks by design.
     const char* nm = st[i].pcTaskName;
-    bool ours = !strcmp(nm, "ui") || !strcmp(nm, "net") || !strcmp(nm, "diag") || !strcmp(nm, "restart") ||
+    bool ours = !strcmp(nm, "ui") || !strcmp(nm, "net") || !strcmp(nm, "lox") || !strcmp(nm, "diag") || !strcmp(nm, "restart") ||
                 !strcmp(nm, "httpd");
     if (ours && free_b < kStackWarn) {
       uint32_t bit = 1u << ((st[i].pcTaskName[0] + st[i].pcTaskName[1]) & 31);

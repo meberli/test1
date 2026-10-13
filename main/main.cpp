@@ -28,6 +28,7 @@
 #include "board_pins.h"
 #include "test_harness.h"
 #include <esp_log.h>
+#include "freertos/idf_additions.h"
 
 static const char* const TAG = "app";
 static TaskHandle_t ui_handle = nullptr;
@@ -258,7 +259,7 @@ const char* kNotConfiguredBody =
 // res_q. Big results (controls, week) live in static storage that only the
 // network task writes before posting and only the UI task reads afterwards.
 
-enum class NetOp : uint8_t { Connect, Load, Command, State, Weather, Settings, Camera, Transit, Calendar, Meteo, Ota };
+enum class NetOp : uint8_t { Connect, Load, Command, State, Weather, Settings, Camera, Transit, Calendar, Meteo, Ota, TestBusy };
 
 struct NetRequest {
   NetOp op;
@@ -268,6 +269,7 @@ struct NetRequest {
   CamRequest cam;
   int station;      // Transit: board index
   char url[256];    // Ota
+  uint32_t busy_ms; // TestBusy (harness): keep the net task busy
   bool ota_check;   // Ota: only check for a newer version
   bool ota_own;     // Ota check: url set by the user
 };
@@ -318,12 +320,22 @@ Station g_hits[kMaxStationHits];
 
 QueueHandle_t net_q = nullptr;
 QueueHandle_t res_q = nullptr;
+// Loxone commands/state reads have their own task and queue (core 0, above
+// the net task), so an OTA download, camera fetch or Wi-Fi switch on the net
+// task never delays a light switch. One Loxone request in flight.
+QueueHandle_t lox_q = nullptr;
 bool net_busy = false;
+bool lox_busy = false;
 LoxoneControl controls[kLoxoneControlCap];
 
 void net_post(const NetRequest& r) {
   net_busy = true;
   xQueueSend(net_q, &r, portMAX_DELAY);
+}
+
+void lox_post(const NetRequest& r) {
+  lox_busy = true;
+  xQueueSend(lox_q, &r, portMAX_DELAY);
 }
 
 void net_load(NetResult* res) {
@@ -484,6 +496,39 @@ void net_settings(const SettingsRequest& s, NetResult* res) {
   }
 }
 
+void lox_task(void*) {
+  for (;;) {
+    NetRequest req;
+    if (xQueueReceive(lox_q, &req, portMAX_DELAY) != pdTRUE) continue;
+    static NetResult res;
+    memset(&res, 0, sizeof(res));
+    res.op = req.op;
+    switch (req.op) {
+      case NetOp::Command: {
+        LoxoneHttpResult r = loxone_send_command(*auth, req.command.action, req.command.command);
+        res.ok = r.ok;
+        res.index = req.command.index;
+        snprintf(res.command, sizeof(res.command), "%s", req.command.command);
+        snprintf(res.detail, sizeof(res.detail), "%s", r.detail);
+        console_printf("Command %s -> %s\n", req.command.command, r.ok ? "ok" : r.detail);
+        break;
+      }
+      case NetOp::State: {
+        LoxoneHttpResult r = loxone_read_state(*auth, req.state.action, req.state.state, req.state.kind,
+                                               res.value, sizeof(res.value));
+        res.ok = r.ok;
+        res.index = req.state.index;
+        console_printf("State %d -> %s (%s)\n", req.state.index, r.ok ? res.value : "-", r.ok ? "ok" : r.detail);
+        break;
+      }
+      default:
+        break;
+    }
+    xQueueSend(res_q, &res, portMAX_DELAY);
+    if (ui_handle != nullptr) xTaskNotifyGive(ui_handle);
+  }
+}
+
 void net_task(void*) {
   for (;;) {
     NetRequest req;
@@ -508,23 +553,14 @@ void net_task(void*) {
       case NetOp::Load:
         net_load(&res);
         break;
-      case NetOp::Command: {
-        LoxoneHttpResult r = loxone_send_command(*auth, req.command.action, req.command.command);
-        res.ok = r.ok;
-        res.index = req.command.index;
-        snprintf(res.command, sizeof(res.command), "%s", req.command.command);
-        snprintf(res.detail, sizeof(res.detail), "%s", r.detail);
-        console_printf("Command %s -> %s\n", req.command.command, r.ok ? "ok" : r.detail);
+      case NetOp::Command:
+      case NetOp::State:
+        break;  // handled by lox_task
+      case NetOp::TestBusy:
+        console_printf("Net busy test %lu ms\n", (unsigned long)req.busy_ms);
+        vTaskDelay(pdMS_TO_TICKS(req.busy_ms));
+        res.ok = true;
         break;
-      }
-      case NetOp::State: {
-        LoxoneHttpResult r = loxone_read_state(*auth, req.state.action, req.state.state, req.state.kind,
-                                               res.value, sizeof(res.value));
-        res.ok = r.ok;
-        res.index = req.state.index;
-        console_printf("State %d -> %s (%s)\n", req.state.index, r.ok ? res.value : "-", r.ok ? "ok" : r.detail);
-        break;
-      }
       case NetOp::Camera: {
         // Fresh details first: the image URL token expires (10 min, free tier).
         char key[72];
@@ -604,7 +640,7 @@ void start_wifi() {
 }
 
 void handle_result(const NetResult& res) {
-  net_busy = false;
+  if (res.op != NetOp::Command && res.op != NetOp::State) net_busy = false;
   switch (res.op) {
     case NetOp::Connect:
       break;
@@ -621,9 +657,11 @@ void handle_result(const NetResult& res) {
       }
       break;
     case NetOp::Command:
+      lox_busy = false;
       ui_command_finished(res.index, res.ok, res.command, res.detail);
       break;
     case NetOp::State:
+      lox_busy = false;
       ui_state_finished(res.index, res.ok, res.ok ? res.value : nullptr);
       break;
     case NetOp::Settings:
@@ -687,6 +725,9 @@ void handle_result(const NetResult& res) {
       if (res.index == 1) ui_ota_checked(g_ota);
       else ui_ota_done(res.ok, res.detail);
       break;
+    case NetOp::TestBusy:
+      console_puts("Net busy test done");
+      break;
     case NetOp::Weather:
       ui_set_weather(res.ok, res.temp_c, res.code);
       ui_set_forecast(res.ok, res.days, 2);
@@ -700,9 +741,21 @@ void handle_result(const NetResult& res) {
 }
 
 void poll() {
+  maint_verify_tick();
   NetResult res;
   while (xQueueReceive(res_q, &res, 0) == pdTRUE) {
     handle_result(res);
+  }
+  // Loxone path first and independent of the net task.
+  if (phase == Phase::Ready && !lox_busy && wifi_connected()) {
+    NetRequest r = {};
+    if (ui_take_command(&r.command)) {
+      r.op = NetOp::Command;
+      lox_post(r);
+    } else if (ui_take_state(&r.state)) {
+      r.op = NetOp::State;
+      lox_post(r);
+    }
   }
   if (net_busy) {
     return;
@@ -737,6 +790,7 @@ void poll() {
         load_painted = true;
         break;
       }
+      if (lox_busy) break;  // the structure load and Loxone requests share the client
       NetRequest r = {};
       r.op = NetOp::Load;
       net_post(r);
@@ -750,12 +804,6 @@ void poll() {
       NetRequest r = {};
       if (ui_take_settings(&r.settings)) {
         r.op = NetOp::Settings;
-        net_post(r);
-      } else if (ui_take_command(&r.command)) {
-        r.op = NetOp::Command;
-        net_post(r);
-      } else if (ui_take_state(&r.state)) {
-        r.op = NetOp::State;
         net_post(r);
       } else if (ui_take_cam(&r.cam)) {
         r.op = NetOp::Camera;
@@ -894,14 +942,31 @@ void ui_task(void*) {
 
 }  // namespace
 
+#ifdef CONFIG_PANEL_TEST_HARNESS
+// Test harness (UI task): occupy the net task for ms, e.g. to check that
+// Loxone requests still run meanwhile.
+bool app_test_net_busy(uint32_t ms) {
+  if (net_busy) return false;
+  NetRequest r = {};
+  r.op = NetOp::TestBusy;
+  r.busy_ms = ms;
+  net_post(r);
+  return true;
+}
+#endif
+
 void app_start() {
   settings_migrate();
   settings_seed_from_build();
   g_loc = settings_load_location();
   g_found = static_cast<CamInfo*>(heap_caps_calloc(kMaxFound, sizeof(CamInfo), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   net_q = xQueueCreate(2, sizeof(NetRequest));
-  res_q = xQueueCreate(2, sizeof(NetResult));
+  res_q = xQueueCreate(3, sizeof(NetResult));
+  lox_q = xQueueCreate(1, sizeof(NetRequest));
   // Network and protocol work on core 0 (with the Wi-Fi stack), UI on core 1.
   xTaskCreatePinnedToCore(net_task, "net", 12 * 1024, nullptr, 4, nullptr, 0);
+  // Stack in PSRAM (8 KB, ~5.2 KB used): internal RAM is scarce, and with
+  // SPIRAM_XIP_FROM_PSRAM the PSRAM stays usable during flash operations.
+  xTaskCreatePinnedToCoreWithCaps(lox_task, "lox", 8 * 1024, nullptr, 5, nullptr, 0, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   xTaskCreatePinnedToCore(ui_task, "ui", 16 * 1024, nullptr, 5, &ui_handle, 1);
 }

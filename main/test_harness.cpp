@@ -24,6 +24,8 @@
 #include <esp_image_format.h>
 #include <esp_ota_ops.h>
 
+bool app_test_net_busy(uint32_t ms);  // main.cpp
+
 namespace {
 
 enum class Sim { Idle, Hold, Move, ReleaseHold };
@@ -204,6 +206,10 @@ void handle(char* cmd) {
   } else if (strncmp(cmd, "WEBIDLE ", 8) == 0) {
     maint_web_set_idle_ms(static_cast<uint32_t>(atoi(cmd + 8)) * 1000u);
     console_puts("OK");
+  } else if (strcmp(cmd, "BOOTOTHER") == 0 || strcmp(cmd, "BOOTOTHER NOVALID") == 0) {
+    console_puts(maint_test_boot_other(cmd[9] == ' ') ? "OK" : "ERR");
+  } else if (sscanf(cmd, "NETBUSY %d", &a) == 1) {
+    console_puts(app_test_net_busy(static_cast<uint32_t>(a)) ? "OK" : "ERR busy");
   } else if (strncmp(cmd, "DIAG", 4) == 0) {
     diag_command(cmd);
   } else if (strcmp(cmd, "IMGVERIFY") == 0) {

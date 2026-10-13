@@ -26,6 +26,12 @@ void maint_collect(MaintStatus* out);  // any task (no LVGL)
 
 // Marks the running image valid (rollback support) - call once the UI runs.
 void maint_mark_valid();
+// UI task, every loop: a new OTA image that has not reached Wi-Fi (not marked
+// valid) within kVerify time is rolled back to the previous slot.
+void maint_verify_tick();
+// Test harness: boot the other OTA slot (as after an update); with skip_valid
+// that boot never marks itself valid, so it must roll back on its own.
+bool maint_test_boot_other(bool skip_valid);
 
 // Network task: download and install url, then the caller restarts.
 // Progress 0..100 in maint_ota_progress() while it runs.

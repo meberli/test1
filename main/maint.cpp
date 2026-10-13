@@ -22,6 +22,7 @@
 #include "settings.h"
 #include "sys.h"
 #include <esp_log.h>
+#include "esp_attr.h"
 
 static const char* const TAG = "maint";
 
@@ -321,7 +322,54 @@ void maint_collect(MaintStatus* s) {
   s->web = g_server != nullptr;
 }
 
+namespace {
+constexpr uint32_t kSkipValidMagic = 0x5A1DBAD0;
+RTC_NOINIT_ATTR uint32_t g_skip_valid;  // survives esp_restart (test harness only)
+#ifdef CONFIG_PANEL_TEST_HARNESS
+constexpr uint32_t kVerifyMs = 90 * 1000;
+#else
+constexpr uint32_t kVerifyMs = 10 * 60 * 1000;
+#endif
+bool pending_verify() {
+  const esp_partition_t* run = esp_ota_get_running_partition();
+  esp_ota_img_states_t st;
+  return run != nullptr && esp_ota_get_state_partition(run, &st) == ESP_OK && st == ESP_OTA_IMG_PENDING_VERIFY;
+}
+}  // namespace
+
+void maint_verify_tick() {
+  static bool checked = false, pending = false;
+  if (!checked) {
+    checked = true;
+    pending = pending_verify();
+    if (pending) console_printf("OTA: new image, must reach Wi-Fi within %lu s\n", (unsigned long)(kVerifyMs / 1000));
+  }
+  if (!pending) return;
+  if (!pending_verify()) {  // marked valid meanwhile
+    pending = false;
+    return;
+  }
+  if (now_ms() > kVerifyMs) {
+    ESP_LOGE(TAG, "new image not confirmed within %lu s: rolling back", (unsigned long)(kVerifyMs / 1000));
+    g_skip_valid = 0;
+    esp_ota_mark_app_invalid_rollback_and_reboot();
+  }
+}
+
+bool maint_test_boot_other(bool skip_valid) {
+  const esp_partition_t* next = esp_ota_get_next_update_partition(nullptr);
+  if (next == nullptr || esp_ota_set_boot_partition(next) != ESP_OK) return false;
+  g_skip_valid = skip_valid ? kSkipValidMagic : 0;
+  console_printf("Test: booting %s%s\n", next->label, skip_valid ? " (never marked valid)" : "");
+  schedule_restart();
+  return true;
+}
+
 void maint_mark_valid() {
+  if (g_skip_valid == kSkipValidMagic) {
+    console_puts("OTA: test - not marking this image valid");
+    return;
+  }
   const esp_partition_t* run = esp_ota_get_running_partition();
   esp_ota_img_states_t st;
   if (run != nullptr && esp_ota_get_state_partition(run, &st) == ESP_OK && st == ESP_OTA_IMG_PENDING_VERIFY) {
