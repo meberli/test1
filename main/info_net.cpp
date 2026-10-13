@@ -8,6 +8,9 @@
 #include "esp_heap_caps.h"
 #include "net.h"
 #include "sys.h"
+#include <esp_log.h>
+
+static const char* const TAG = "info_net";
 
 namespace {
 
@@ -78,7 +81,7 @@ int transit_search(const char* query, Station* out, int cap) {
   if (body == nullptr) return -1;
   HttpGetResult http = http_get(url, nullptr, nullptr, body, kCap, 10000);
   if (!http.ok || http.status != 200) {
-    console_printf("Transit search HTTP %d %s\n", http.status, http.error);
+    ESP_LOGW(TAG, "Transit search HTTP %d %s", http.status, http.error);
     heap_caps_free(body);
     return -1;
   }
@@ -114,7 +117,7 @@ bool transit_board(const Station& st, Board* out) {
   if (body == nullptr) return false;
   HttpGetResult http = http_get(url, nullptr, nullptr, body, kCap, 10000);
   if (!http.ok || http.status != 200) {
-    console_printf("Stationboard %s HTTP %d %s\n", st.id, http.status, http.error);
+    ESP_LOGW(TAG, "Stationboard %s HTTP %d %s", st.id, http.status, http.error);
     heap_caps_free(body);
     return false;
   }
@@ -122,7 +125,7 @@ bool transit_board(const Station& st, Board* out) {
   DeserializationError err = deserializeJson(doc, reinterpret_cast<const char*>(body), http.length);
   heap_caps_free(body);
   if (err) {
-    console_printf("Stationboard JSON %s\n", err.c_str());
+    ESP_LOGW(TAG, "Stationboard JSON %s", err.c_str());
     return false;
   }
   for (JsonObject j : doc["stationboard"].as<JsonArray>()) {
@@ -177,7 +180,7 @@ bool calendar_fetch(const char* ical_url, const char* waste_url, Calendar* out) 
         out->ok_events = true;
         console_printf("Calendar: %d events in 60 days (%u bytes)\n", out->n_events, static_cast<unsigned>(http.length));
       } else {
-        console_printf("Calendar HTTP %d %s\n", http.status, http.error);  // never log the private URL
+        ESP_LOGW(TAG, "Calendar HTTP %d %s", http.status, http.error);  // never log the private URL
       }
       heap_caps_free(body);
     }
@@ -200,7 +203,7 @@ bool calendar_fetch(const char* ical_url, const char* waste_url, Calendar* out) 
         out->ok_waste = out->n_waste > 0;
         console_printf("Waste: %d dates (%u bytes)\n", out->n_waste, static_cast<unsigned>(http.length));
       } else {
-        console_printf("Waste HTTP %d %s\n", http.status, http.error);
+        ESP_LOGW(TAG, "Waste HTTP %d %s", http.status, http.error);
       }
       heap_caps_free(body);
     }
@@ -218,7 +221,7 @@ bool meteo_fetch(const char* plz, MeteoNow* out) {
   if (body == nullptr) return false;
   HttpGetResult http = http_get(url, nullptr, nullptr, body, kCap, 15000, "Accept-Language", "de");
   if (!http.ok || http.status != 200) {
-    console_printf("MeteoSchweiz HTTP %d %s\n", http.status, http.error);
+    ESP_LOGW(TAG, "MeteoSchweiz HTTP %d %s", http.status, http.error);
     heap_caps_free(body);
     return false;
   }
@@ -233,7 +236,7 @@ bool meteo_fetch(const char* plz, MeteoNow* out) {
                                              DeserializationOption::Filter(filter));
   heap_caps_free(body);
   if (err) {
-    console_printf("MeteoSchweiz JSON %s\n", err.c_str());
+    ESP_LOGW(TAG, "MeteoSchweiz JSON %s", err.c_str());
     return false;
   }
   const int64_t now = time(nullptr);

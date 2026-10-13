@@ -20,6 +20,7 @@
 #include "panel_hw.h"
 #include "maint.h"
 #include "panel_ui.h"
+#include "diag.h"
 #include <esp_image_format.h>
 #include <esp_ota_ops.h>
 
@@ -203,6 +204,8 @@ void handle(char* cmd) {
   } else if (strncmp(cmd, "WEBIDLE ", 8) == 0) {
     maint_web_set_idle_ms(static_cast<uint32_t>(atoi(cmd + 8)) * 1000u);
     console_puts("OK");
+  } else if (strncmp(cmd, "DIAG", 4) == 0) {
+    diag_command(cmd);
   } else if (strcmp(cmd, "IMGVERIFY") == 0) {
     // Same check esp_ota_end() runs (incl. app signature) on the idle OTA slot.
     const esp_partition_t* part = esp_ota_get_next_update_partition(nullptr);

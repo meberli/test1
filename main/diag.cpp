@@ -7,6 +7,7 @@
 #include <atomic>
 
 #include "esp_heap_caps.h"
+#include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -34,6 +35,54 @@ void stats() {
   vTaskGetRunTimeStats(buf);
   console_puts("DIAG tasks (name, abs time, % since boot):");
   console_write(buf, strlen(buf));
+#endif
+}
+
+const char* const TAG = "diag";
+// Warn once a task has less stack headroom than this (bytes; ESP-IDF high-water
+// marks are in bytes) or internal RAM drops below kHeapWarn.
+constexpr uint32_t kStackWarn = 768;
+constexpr size_t kHeapWarn = 16 * 1024;
+
+// Stack high-water marks of all tasks plus heap minima. warn_only: log only
+// tasks/heap below the thresholds (periodic check), else print everything.
+void stacks(bool warn_only) {
+#if CONFIG_FREERTOS_USE_TRACE_FACILITY
+  static TaskStatus_t st[32];
+  static uint32_t warned = 0;  // bit per slot index of tasks already warned about (by name hash)
+  UBaseType_t n = uxTaskGetSystemState(st, 32, nullptr);
+  char line[480];
+  size_t used = snprintf(line, sizeof(line), "DIAG stack free(B):");
+  for (UBaseType_t i = 0; i < n; ++i) {
+    uint32_t free_b = st[i].usStackHighWaterMark;
+    // Only our own tasks: IDF system tasks (ipc, IDLE) run with small fixed stacks by design.
+    const char* nm = st[i].pcTaskName;
+    bool ours = !strcmp(nm, "ui") || !strcmp(nm, "net") || !strcmp(nm, "diag") || !strcmp(nm, "restart") ||
+                !strcmp(nm, "httpd");
+    if (ours && free_b < kStackWarn) {
+      uint32_t bit = 1u << ((st[i].pcTaskName[0] + st[i].pcTaskName[1]) & 31);
+      if (!(warned & bit)) {
+        warned |= bit;
+        ESP_LOGW(TAG, "low stack: task %s only %lu bytes free", st[i].pcTaskName, (unsigned long)free_b);
+      }
+    }
+    if (!warn_only && used < sizeof(line) - 24)
+      used += snprintf(line + used, sizeof(line) - used, " %s=%lu", st[i].pcTaskName, (unsigned long)free_b);
+  }
+  size_t int_min = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+  static bool heap_warned = false;
+  if (int_min < kHeapWarn && !heap_warned) {
+    heap_warned = true;
+    ESP_LOGW(TAG, "internal RAM minimum %u bytes", (unsigned)int_min);
+  }
+  if (!warn_only) {
+    console_puts(line);
+    console_printf("DIAG heap int free=%uKB min=%uKB block=%uKB | psram free=%uKB min=%uKB\n",
+                   (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024), (unsigned)(int_min / 1024),
+                   (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024),
+                   (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024),
+                   (unsigned)(heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM) / 1024));
+  }
 #endif
 }
 
@@ -94,6 +143,8 @@ void handle(const char* line) {
     console_puts("DIAG OK");
   } else if (strcmp(line, "DIAGSTATS") == 0) {
     stats();
+  } else if (strcmp(line, "DIAGSTACK") == 0) {
+    stacks(false);
   }
 }
 
@@ -134,13 +185,16 @@ void diag_task(void*) {
     if (now - last >= every) {
       last = now;
       report(up);
+      stacks(every == 5000);  // full table once a minute, warnings always
     }
-    if (!stats30 && up >= 30) { stats30 = true; stats(); }
+    if (!stats30 && up >= 30) { stats30 = true; stats(); stacks(false); }
     if (!stats90 && up >= 90) { stats90 = true; stats(); }
     vTaskDelay(pdMS_TO_TICKS(20));
   }
 }
 }  // namespace
+
+void diag_command(const char* line) { handle(line); }
 
 void diag_start() { xTaskCreatePinnedToCore(diag_task, "diag", 4096, nullptr, 2, nullptr, 0); }
 

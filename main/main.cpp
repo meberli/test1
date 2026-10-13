@@ -27,6 +27,9 @@
 #include "ota_check.h"
 #include "board_pins.h"
 #include "test_harness.h"
+#include <esp_log.h>
+
+static const char* const TAG = "app";
 
 #ifndef SERIAL_BAUD
 #define SERIAL_BAUD CONFIG_PANEL_SERIAL_BAUD
@@ -90,7 +93,7 @@ int geocode(const char* query, GeoPlace* out) {
   if (body == nullptr) return -1;
   HttpGetResult http = http_get(url, nullptr, nullptr, body, kCap, 10000);
   if (!http.ok || http.status != 200) {
-    console_printf("Geocode HTTP %d %s\n", http.status, http.error);
+    ESP_LOGW(TAG, "Geocode HTTP %d %s", http.status, http.error);
     heap_caps_free(body);
     return -1;
   }
@@ -101,7 +104,7 @@ int geocode(const char* query, GeoPlace* out) {
                                              DeserializationOption::Filter(filter));  // const: copies strings
   heap_caps_free(body);
   if (err) {
-    console_printf("Geocode JSON %s\n", err.c_str());
+    ESP_LOGW(TAG, "Geocode JSON %s", err.c_str());
     return -1;
   }
   int n = 0;
@@ -137,7 +140,7 @@ bool fetch_buchs_weather(int* temp_c, int* code, WeatherDay* days, int* week_cou
            g_loc.lat, g_loc.lon);
   HttpGetResult http = http_get(url, nullptr, nullptr, payload, kCap, 10000);
   if (!http.ok || http.status != 200) {
-    console_printf("Weather HTTP %d %s\n", http.status, http.error);
+    ESP_LOGW(TAG, "Weather HTTP %d %s", http.status, http.error);
     heap_caps_free(payload);
     return false;
   }
@@ -156,7 +159,7 @@ bool fetch_buchs_weather(int* temp_c, int* code, WeatherDay* days, int* week_cou
                       DeserializationOption::Filter(filter));  // const input: strings are copied, payload can be freed
   heap_caps_free(payload);
   if (err) {
-    console_printf("Weather JSON %s (%u bytes)\n", err.c_str(), static_cast<unsigned>(http.length));
+    ESP_LOGW(TAG, "Weather JSON %s (%u bytes)", err.c_str(), static_cast<unsigned>(http.length));
     return false;
   }
   JsonVariant temp = doc["current"]["temperature_2m"];
@@ -380,7 +383,7 @@ void net_settings(const SettingsRequest& s, NetResult* res) {
         settings_save_wifi(s.creds);  // only a network that really got an IP is stored
         console_printf("Wi-Fi \"%s\" connected and saved\n", s.creds.ssid);
       } else if (have_old) {
-        console_printf("Wi-Fi \"%s\" failed (status %d, reason %d), back to \"%s\"\n", s.creds.ssid, res->status,
+        ESP_LOGW(TAG, "Wi-Fi \"%s\" failed (status %d, reason %d), back to \"%s\"", s.creds.ssid, res->status,
                        wifi_last_reason(), old.ssid);
         snprintf(res->title, sizeof(res->title), "%s", old.ssid);
         wifi_start(old.ssid, old.pass, "loxone-panel");
@@ -389,7 +392,7 @@ void net_settings(const SettingsRequest& s, NetResult* res) {
         res->index = wifi_connected() ? 1 : 0;  // reverted and connected again
         console_printf("Wi-Fi back on \"%s\": %s\n", old.ssid, wifi_connected() ? "connected" : "still trying");
       } else {
-        console_printf("Wi-Fi \"%s\" failed (status %d, reason %d), no previous network\n", s.creds.ssid,
+        ESP_LOGW(TAG, "Wi-Fi \"%s\" failed (status %d, reason %d), no previous network", s.creds.ssid,
                        res->status, wifi_last_reason());
       }
       memset(&old, 0, sizeof(old));

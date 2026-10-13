@@ -21,6 +21,9 @@
 #include "freertos/task.h"
 #include "settings.h"
 #include "sys.h"
+#include <esp_log.h>
+
+static const char* const TAG = "maint";
 
 namespace {
 
@@ -273,7 +276,7 @@ esp_err_t on_update(httpd_req_t* req) {
   if (err == ESP_OK) err = esp_ota_set_boot_partition(part);
   g_ota_pct = -1;
   if (err != ESP_OK) {
-    console_printf("Web: firmware upload failed: %s\n", esp_err_to_name(err));
+    ESP_LOGW(TAG, "Web: firmware upload failed: %s", esp_err_to_name(err));
     httpd_resp_set_status(req, "500 Internal Server Error");
     char msg[120];
     snprintf(msg, sizeof(msg), "Update fehlgeschlagen: %s", err == ESP_ERR_OTA_VALIDATE_FAILED

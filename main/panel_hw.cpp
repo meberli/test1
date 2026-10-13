@@ -17,6 +17,9 @@
 #include "esp_rom_sys.h"
 #include "test_harness.h"
 #include "diag.h"
+#include <esp_log.h>
+
+static const char* const TAG = "panel_hw";
 
 #define GT911_ADDR1 0x5D
 #define GT911_ADDR2 0x14
@@ -320,7 +323,7 @@ uint8_t panel_touch_begin() {
     bc.glitch_ignore_cnt = 7;
     bc.flags.enable_internal_pullup = 1;
     if (i2c_new_master_bus(&bc, &i2c_bus) != ESP_OK) {
-      console_puts("I2C bus init failed");
+      ESP_LOGE(TAG, "I2C bus init failed");
       return 0;
     }
   }

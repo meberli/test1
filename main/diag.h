@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+void diag_command(const char* line);  // DIAG* console command (also from the test harness)
 void diag_start();                       // after the UI task runs
 void diag_touch_poll(bool i2c_ok, bool fresh, bool pressed);  // gt_poll
 // gt_poll: true = use injected point; *raw = point is in GT911 coordinates

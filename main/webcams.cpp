@@ -11,6 +11,9 @@
 #include "jpeg_decoder.h"
 #include "net.h"
 #include "sys.h"
+#include <esp_log.h>
+
+static const char* const TAG = "webcams";
 
 namespace {
 
@@ -96,7 +99,7 @@ bool get_json(const char* key, const char* url, bool list, DynamicJsonDocument& 
   HttpGetResult http = http_get(url, nullptr, nullptr, body, kJsonCap, 10000, kKeyHeader, key);
   if (status != nullptr) *status = http.status;
   if (!http.ok || http.status != 200) {
-    console_printf("Windy HTTP %d %s\n", http.status, http.error);
+    ESP_LOGW(TAG, "Windy HTTP %d %s", http.status, http.error);
     heap_caps_free(body);
     return false;
   }
@@ -106,7 +109,7 @@ bool get_json(const char* key, const char* url, bool list, DynamicJsonDocument& 
                                              DeserializationOption::Filter(filter));
   heap_caps_free(body);
   if (err) {
-    console_printf("Windy JSON %s\n", err.c_str());
+    ESP_LOGW(TAG, "Windy JSON %s", err.c_str());
     return false;
   }
   return true;

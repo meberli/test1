@@ -12,6 +12,9 @@
 #include "esp_sntp.h"
 #include "esp_timer.h"
 #include "sys.h"
+#include <esp_log.h>
+
+static const char* const TAG = "clock";
 
 namespace {
 // esp_sntp keeps the server name pointer, so the string must outlive SNTP.
@@ -37,7 +40,7 @@ void clock_sntp_start(const char* server) {
   cfg.sync_cb = on_sync;
   esp_err_t err = esp_netif_sntp_init(&cfg);
   g_started = err == ESP_OK;
-  console_printf("SNTP start %s: %s\n", g_server, esp_err_to_name(err));
+  ESP_LOGW(TAG, "SNTP start %s: %s", g_server, esp_err_to_name(err));
 }
 
 bool clock_synced() { return g_synced; }
