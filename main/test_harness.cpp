@@ -194,6 +194,7 @@ void handle(char* cmd) {
     ui_set_screen_timeout(static_cast<uint16_t>(atoi(cmd + 6)));
     console_puts("OK");
   } else if (strcmp(cmd, "REBOOT") == 0) {
+    ui_flush_settings();
     console_puts("OK");
     vTaskDelay(pdMS_TO_TICKS(100));
     esp_restart();

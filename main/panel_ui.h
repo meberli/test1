@@ -24,6 +24,8 @@ struct LoxoneStateRequest {
 };
 
 void ui_init();
+// Writes pending display choices to NVS now (UI task only).
+void ui_flush_settings();
 // Every touch sample (real or simulated), before LVGL sees it. Decides tap vs
 // swipe for the whole touch and runs page/back/home swipes.
 void ui_touch_sample(bool pressed, int x, int y);

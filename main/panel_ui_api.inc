@@ -405,7 +405,10 @@ void ui_ota_checked(const OtaCheck& c) {
   if (nav == Nav::Maint) maint_refresh();
 }
 
-void restart_now(lv_timer_t*) { esp_restart(); }
+void restart_now(lv_timer_t*) {
+  disp_save_flush(true);
+  esp_restart();
+}
 
 void ui_ota_done(bool ok, const char* err) {
   ota_running = false;
@@ -417,3 +420,6 @@ void ui_ota_done(bool ok, const char* err) {
     lv_timer_set_repeat_count(t, 1);
   }
 }
+
+// Write pending display choices now (before a restart). UI task only.
+void ui_flush_settings() { disp_save_flush(true); }

@@ -1194,6 +1194,7 @@ void build_web_confirm() {
 // Once a second (clock_tick).
 void info_tick() {
   static uint32_t last = 0;
+  disp_save_flush(false);
   if (maint_web_tick() && nav == Nav::Maint) maint_refresh();
   if (web_confirm != nullptr) {
     bool want = maint_secrets_requested();

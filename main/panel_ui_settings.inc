@@ -113,14 +113,26 @@ void open_display() {
   show(disp_root);
 }
 
+// Display choices are saved 1.5 s after the last tap (or when leaving the
+// screen / restarting), so tapping through options writes NVS once.
+uint32_t disp_save_at = 0;  // 0: nothing pending
+void disp_save_later() { disp_save_at = now_ms() + 1500; if (disp_save_at == 0) disp_save_at = 1; }
+void disp_save_flush(bool force) {
+  if (disp_save_at == 0) return;
+  if (!force && static_cast<int32_t>(now_ms() - disp_save_at) < 0) return;
+  disp_save_at = 0;
+  bool ok = settings_save_display(disp);
+  console_printf("Display settings saved=%d\n", ok ? 1 : 0);
+}
+
 void on_timeout_btn(lv_event_t* e) {
   if (gesture_consumed) return;
   int i = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
   disp.timeout_s = kTimeoutChoices[i];
   scr_timeout_s = disp.timeout_s;
   last_activity = now_ms();
-  bool ok = settings_save_display(disp);
-  console_printf("Screen timeout %u s saved=%d\n", static_cast<unsigned>(disp.timeout_s), ok ? 1 : 0);
+  disp_save_later();
+  console_printf("Screen timeout %u s\n", static_cast<unsigned>(disp.timeout_s));
   refresh_display_settings();
 }
 
@@ -128,16 +140,16 @@ void on_saver_btn(lv_event_t* e) {
   if (gesture_consumed) return;
   int i = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
   disp.saver = static_cast<uint8_t>(i);
-  bool ok = settings_save_display(disp);
-  console_printf("Screen saver %d saved=%d\n", i, ok ? 1 : 0);
+  disp_save_later();
+  console_printf("Screen saver %d\n", i);
   refresh_display_settings();
 }
 
 void on_hint_row(lv_event_t*) {
   if (gesture_consumed) return;
   disp.hint = !disp.hint;
-  bool ok = settings_save_display(disp);
-  console_printf("Screen hint %d saved=%d\n", disp.hint ? 1 : 0, ok ? 1 : 0);
+  disp_save_later();
+  console_printf("Screen hint %d\n", disp.hint ? 1 : 0);
   refresh_display_settings();
 }
 
@@ -515,7 +527,10 @@ void open_settings() {
   show(set_root);
 }
 
-void settings_back() { open_settings(); }
+void settings_back() {
+  disp_save_flush(true);
+  open_settings();
+}
 
 void on_wifi_row(lv_event_t* e);
 void on_loc_row(lv_event_t* e);
