@@ -37,7 +37,7 @@ httpd_handle_t g_server = nullptr;
 // to the panel (CSRF). 5 wrong PINs lock the API for 60 s. The server switches
 // itself off 15 min after the last authenticated request.
 constexpr uint32_t kIdleOffMs = 15 * 60 * 1000;
-uint32_t g_idle_off_ms = kIdleOffMs;  // test harness may shorten (WEBIDLE)
+std::atomic<uint32_t> g_idle_off_ms{kIdleOffMs};  // test harness may shorten (WEBIDLE)
 constexpr uint32_t kLockMs = 60 * 1000;
 constexpr uint32_t kGrantMs = 60 * 1000;
 constexpr int kMaxFails = 5;
@@ -96,8 +96,8 @@ bool authorized(httpd_req_t* req) {
   g_last_ms = now;
   return true;
 }
-volatile int g_ota_pct = -1;
-volatile bool g_restart = false;
+std::atomic<int> g_ota_pct{-1};      // written by httpd or net task, read by the UI
+std::atomic<bool> g_restart{false};
 
 void restart_task(void*) {
   vTaskDelay(pdMS_TO_TICKS(1500));

@@ -21,10 +21,10 @@
 namespace {
 std::atomic<uint32_t> t_reads{0}, t_err{0}, t_fresh{0}, t_pressed{0};
 std::atomic<uint32_t> ui_loops{0}, ui_lv_max{0}, ui_poll_max{0}, ui_loop_max{0}, ui_slow{0};
-volatile uint32_t interactive_ms = 0;
+std::atomic<uint32_t> interactive_ms{0};
 
 // Injection (diag task writes, UI task reads).
-volatile bool inj_active = false;
+std::atomic<bool> inj_active{false};  // set last (after the params) by the diag task, read by the UI task
 volatile bool inj_raw = false;
 volatile int inj_x0, inj_y0, inj_x1, inj_y1;
 volatile uint32_t inj_t0, inj_dur, inj_hold;
@@ -86,8 +86,19 @@ void stacks(bool warn_only) {
 #endif
 }
 
+bool read_only(const char* line) {
+  return strcmp(line, "DIAGGT") == 0 || strcmp(line, "DIAGFB") == 0 || strcmp(line, "DIAGSTATS") == 0 ||
+         strcmp(line, "DIAGSTACK") == 0;
+}
+
 void handle(const char* line) {
   int a, b, c, d, e;
+#if !CONFIG_PANEL_DIAG_INJECT && !CONFIG_PANEL_TEST_HARNESS
+  if (!read_only(line)) {
+    if (strncmp(line, "DIAG", 4) == 0) console_puts("DIAG ERR read-only build (CONFIG_PANEL_DIAG_INJECT)");
+    return;
+  }
+#endif
   if (sscanf(line, "DIAGRAW %d %d", &a, &b) == 2) {
     inj_x0 = a; inj_x1 = a; inj_y0 = b; inj_y1 = b; inj_dur = 120; inj_hold = 0;
     inj_raw = true;
