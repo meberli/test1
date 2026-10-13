@@ -888,6 +888,7 @@ void ui_task(void*) {
 }  // namespace
 
 void app_start() {
+  settings_migrate();
   settings_seed_from_build();
   g_loc = settings_load_location();
   g_found = static_cast<CamInfo*>(heap_caps_calloc(kMaxFound, sizeof(CamInfo), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));

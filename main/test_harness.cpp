@@ -18,6 +18,7 @@
 
 #include "board_pins.h"
 #include "panel_hw.h"
+#include "maint.h"
 #include "panel_ui.h"
 
 namespace {
@@ -197,6 +198,9 @@ void handle(char* cmd) {
   } else if (strncmp(cmd, "WASTEUNTIL", 10) == 0) {
     if (cmd[10] == ' ') ui_set_waste_until(static_cast<uint16_t>(atoi(cmd + 11)));
     console_printf("WASTEUNTIL %u\n", ui_waste_until());
+  } else if (strncmp(cmd, "WEBIDLE ", 8) == 0) {
+    maint_web_set_idle_ms(static_cast<uint32_t>(atoi(cmd + 8)) * 1000u);
+    console_puts("OK");
   } else if (strcmp(cmd, "WASTETEST") == 0) {
     console_puts(ui_waste_test() ? "OK" : "ERR no calendar");
   } else if (strcmp(cmd, "REMCLEAR") == 0) {

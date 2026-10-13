@@ -44,6 +44,7 @@ const char* maint_web_pin();
 bool maint_web_tick();
 // Secrets export: the browser asked, the panel must confirm (one download
 // within 60 s after "allow").
+void maint_web_set_idle_ms(uint32_t idle_ms);  // test harness; 0 = default 15 min
 bool maint_secrets_requested();
 void maint_secrets_answer(bool allow);
 // true once an upload installed a new image (the UI shows it and restarts).

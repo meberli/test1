@@ -156,9 +156,13 @@ const LoxoneConfig& settings_loxone();  // loaded once (after settings_seed_from
 // Secret keys (Wi-Fi password, Windy key, iCal URL) only with secrets = true.
 // Returns the JSON length written to out (truncated output returns 0).
 size_t settings_export_json(char* out, size_t n, bool secrets);
-// Writes every key of a settings_export_json() document. Returns the number
-// of keys written, -1 on a parse error.
-int settings_import_json(const char* json, size_t len);
+// Restores a settings_export_json() document, validated against the schema
+// (settings_schema.h). Returns keys written; -1 not a settings file, -2 file
+// from a newer config version, -3 invalid values (nothing written). report
+// lists rejected and unknown keys (never values).
+int settings_import_json(const char* json, size_t len, char* report, size_t report_n);
+// Boot: stores/upgrades the config version ("cfg_ver"), converting old keys.
+void settings_migrate();
 
 // Requests from the settings screens to the network task.
 struct SettingsRequest {

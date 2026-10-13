@@ -9,6 +9,8 @@
 #include "esp_heap_caps.h"
 #include "nvs.h"
 #include "sdkconfig.h"
+#include "settings_schema.h"
+#include "sys.h"
 
 namespace {
 constexpr const char* kNs = "panel";
@@ -272,15 +274,6 @@ bool settings_save_station(int i, const Station& st) {
 
 namespace {
 const char* const kTextKey[kTextSettingN] = {"ical_url", "waste_url", "ota_url", "meteo_plz"};
-// Keys that never leave the panel unless the user asks for secrets.
-const char* const kSecretKeys[] = {"wifi_pass", "windy_key", "ical_url", "windy_dflt", "ical_dflt", "lox_pass"};
-
-bool is_secret(const char* key) {
-  for (const char* k : kSecretKeys) {
-    if (strcmp(k, key) == 0) return true;
-  }
-  return false;
-}
 }  // namespace
 
 const char* settings_text_default(TextSetting which) {
@@ -316,6 +309,14 @@ bool settings_load_text(TextSetting which, char* out, size_t n, bool* own) {
 
 bool settings_save_text(TextSetting which, const char* value) {
   if (which >= kTextSettingN) return false;
+  if (value != nullptr && value[0] != '\0') {
+    const KeySpec* ks = schema_find(kTextKey[which]);
+    const char* why = "";
+    if (ks != nullptr && !schema_check_str(*ks, value, &why)) {
+      console_printf("Setting %s rejected: %s\n", kTextKey[which], why);
+      return false;
+    }
+  }
   nvs_handle_t h;
   if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return false;
   bool ok = true;
@@ -326,97 +327,201 @@ bool settings_save_text(TextSetting which, const char* value) {
   return ok;
 }
 
-// {"format":"esp_display-settings","version":1,"secrets":false,
+// {"format":"esp_display-settings","version":1,"cfg_ver":1,"secrets":false,
 //  "keys":{"loc_name":{"t":"str","v":"Buchs SG"},"scr_to":{"t":"u16","v":120},
 //          "loc_lat":{"t":"blob","v":"<hex>"}}}
+// Only keys of the schema (settings_schema.cpp) are exported; secrets only on request.
 size_t settings_export_json(char* out, size_t n, bool secrets) {
   DynamicJsonDocument doc(16384);
   doc["format"] = "esp_display-settings";
   doc["version"] = 1;
+  doc["cfg_ver"] = kCfgVersion;
   doc["secrets"] = secrets;
   JsonObject keys = doc.createNestedObject("keys");
   nvs_handle_t h;
   if (nvs_open(kNs, NVS_READONLY, &h) != ESP_OK) {
     return serializeJson(doc, out, n);
   }
-  nvs_iterator_t it = nullptr;
-  esp_err_t res = nvs_entry_find(NVS_DEFAULT_PART_NAME, kNs, NVS_TYPE_ANY, &it);
-  while (res == ESP_OK) {
-    nvs_entry_info_t info;
-    nvs_entry_info(it, &info);
-    res = nvs_entry_next(&it);
-    if (!secrets && is_secret(info.key)) continue;
-    JsonObject k = keys.createNestedObject(info.key);
-    switch (info.type) {
-      case NVS_TYPE_U8: { uint8_t v; nvs_get_u8(h, info.key, &v); k["t"] = "u8"; k["v"] = v; break; }
-      case NVS_TYPE_U16: { uint16_t v; nvs_get_u16(h, info.key, &v); k["t"] = "u16"; k["v"] = v; break; }
-      case NVS_TYPE_U32: { uint32_t v; nvs_get_u32(h, info.key, &v); k["t"] = "u32"; k["v"] = v; break; }
-      case NVS_TYPE_I32: { int32_t v; nvs_get_i32(h, info.key, &v); k["t"] = "i32"; k["v"] = v; break; }
-      case NVS_TYPE_STR: {
-        char v[300];
-        size_t len = sizeof(v);
-        if (nvs_get_str(h, info.key, v, &len) != ESP_OK) v[0] = '\0';
-        k["t"] = "str";
-        k["v"] = v;  // copied by ArduinoJson
+  const KeySpec* spec = schema_begin();
+  for (size_t i = 0; i < schema_count(); ++i) {
+    const KeySpec& ks = spec[i];
+    if (ks.flags & kKeyInternal) continue;
+    if (!secrets && (ks.flags & kKeySecret)) continue;
+    switch (ks.type) {
+      case KeyType::U8: {
+        uint8_t v;
+        if (nvs_get_u8(h, ks.key, &v) != ESP_OK) break;
+        JsonObject k = keys.createNestedObject(ks.key);
+        k["t"] = "u8";
+        k["v"] = v;
         break;
       }
-      case NVS_TYPE_BLOB: {
-        uint8_t v[128];
+      case KeyType::U16: {
+        uint16_t v;
+        if (nvs_get_u16(h, ks.key, &v) != ESP_OK) break;
+        JsonObject k = keys.createNestedObject(ks.key);
+        k["t"] = "u16";
+        k["v"] = v;
+        break;
+      }
+      case KeyType::Str: {
+        char v[300];
         size_t len = sizeof(v);
-        if (nvs_get_blob(h, info.key, v, &len) != ESP_OK) len = 0;
+        if (nvs_get_str(h, ks.key, v, &len) != ESP_OK) break;
+        JsonObject k = keys.createNestedObject(ks.key);
+        k["t"] = "str";
+        k["v"] = v;  // copied by ArduinoJson
+        memset(v, 0, sizeof(v));
+        break;
+      }
+      case KeyType::Blob: {
+        uint8_t v[256];
+        size_t len = sizeof(v);
+        if (nvs_get_blob(h, ks.key, v, &len) != ESP_OK) break;
         char hex[sizeof(v) * 2 + 1];
-        for (size_t i = 0; i < len; ++i) snprintf(hex + i * 2, 3, "%02x", v[i]);
+        for (size_t b = 0; b < len; ++b) snprintf(hex + b * 2, 3, "%02x", v[b]);
         hex[len * 2] = '\0';
+        JsonObject k = keys.createNestedObject(ks.key);
         k["t"] = "blob";
         k["v"] = hex;
         break;
       }
-      default:
-        keys.remove(info.key);
-        break;
     }
   }
-  nvs_release_iterator(it);
   nvs_close(h);
   if (measureJson(doc) + 1 > n) return 0;
   return serializeJson(doc, out, n);
 }
 
-int settings_import_json(const char* json, size_t len) {
+namespace {
+
+bool parse_hex(const char* hex, uint8_t* out, size_t cap, size_t* n) {
+  size_t len = strlen(hex);
+  if (len % 2 != 0 || len / 2 > cap) return false;
+  for (size_t i = 0; i < len / 2; ++i) {
+    unsigned v = 0;
+    for (int k = 0; k < 2; ++k) {
+      char c = hex[i * 2 + k];
+      int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+      if (d < 0) return false;
+      v = v * 16 + static_cast<unsigned>(d);
+    }
+    out[i] = static_cast<uint8_t>(v);
+  }
+  *n = len / 2;
+  return true;
+}
+
+const char* type_name(KeyType t) {
+  switch (t) {
+    case KeyType::U8: return "u8";
+    case KeyType::U16: return "u16";
+    case KeyType::Str: return "str";
+    default: return "blob";
+  }
+}
+
+}  // namespace
+
+// Two passes: validate every key against the schema, then write. Any invalid
+// known key rejects the whole file (nothing written); unknown keys (e.g. from a
+// newer firmware) are skipped and listed.
+int settings_import_json(const char* json, size_t len, char* report, size_t rn) {
+  if (report != nullptr && rn > 0) report[0] = '\0';
+  auto note = [&](const char* fmt, const char* a, const char* b) {
+    if (report == nullptr || rn == 0) return;
+    size_t used = strlen(report);
+    if (used + 1 < rn) snprintf(report + used, rn - used, fmt, a, b);
+  };
   DynamicJsonDocument doc(16384);
   if (deserializeJson(doc, json, len)) return -1;
   if (strcmp(doc["format"] | "", "esp_display-settings") != 0) return -1;
-  nvs_handle_t h;
-  if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return -1;
-  int n = 0;
-  for (JsonPair kv : doc["keys"].as<JsonObject>()) {
-    const char* key = kv.key().c_str();
-    if (strlen(key) > 15) continue;
-    const char* t = kv.value()["t"] | "";
-    JsonVariant v = kv.value()["v"];
-    esp_err_t e = ESP_FAIL;
-    if (strcmp(t, "u8") == 0) e = nvs_set_u8(h, key, v.as<uint8_t>());
-    else if (strcmp(t, "u16") == 0) e = nvs_set_u16(h, key, v.as<uint16_t>());
-    else if (strcmp(t, "u32") == 0) e = nvs_set_u32(h, key, v.as<uint32_t>());
-    else if (strcmp(t, "i32") == 0) e = nvs_set_i32(h, key, v.as<int32_t>());
-    else if (strcmp(t, "str") == 0) e = nvs_set_str(h, key, v | "");
-    else if (strcmp(t, "blob") == 0) {
-      const char* hex = v | "";
-      uint8_t b[128];
-      size_t bl = strlen(hex) / 2;
-      if (bl > sizeof(b)) continue;
-      for (size_t i = 0; i < bl; ++i) {
-        unsigned x = 0;
-        sscanf(hex + i * 2, "%2x", &x);
-        b[i] = static_cast<uint8_t>(x);
-      }
-      e = nvs_set_blob(h, key, b, bl);
-    }
-    if (e == ESP_OK) n++;
+  int ver = doc["cfg_ver"] | 1;
+  if (ver > kCfgVersion) {
+    return -2;
   }
-  nvs_commit(h);
+  JsonObject keys = doc["keys"].as<JsonObject>();
+  if (keys.isNull()) return -1;
+  int bad = 0, skipped = 0;
+  for (int pass = 0; pass < 2; ++pass) {
+    nvs_handle_t h = 0;
+    if (pass == 1) {
+      if (bad > 0) return -3;
+      if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return -1;
+    }
+    int written = 0;
+    for (JsonPair kv : keys) {
+      const char* key = kv.key().c_str();
+      const KeySpec* ks = schema_find(key);
+      if (ks == nullptr || (ks->flags & kKeyInternal)) {
+        if (pass == 0) {
+          ++skipped;
+          note("unbekannt: %s%s; ", key, "");
+        }
+        continue;
+      }
+      const char* t = kv.value()["t"] | "";
+      JsonVariant v = kv.value()["v"];
+      const char* why = "falscher Typ";
+      bool ok = strcmp(t, type_name(ks->type)) == 0;
+      uint8_t blob[256];
+      size_t bl = 0;
+      if (ok) {
+        switch (ks->type) {
+          case KeyType::U8:
+          case KeyType::U16:
+            ok = v.is<long long>() && schema_check_int(*ks, v.as<long long>(), &why);
+            break;
+          case KeyType::Str:
+            ok = v.is<const char*>() && schema_check_str(*ks, v.as<const char*>(), &why);
+            break;
+          case KeyType::Blob:
+            ok = v.is<const char*>() && parse_hex(v.as<const char*>(), blob, sizeof(blob), &bl);
+            if (!ok) why = "kein Hex";
+            ok = ok && schema_check_blob(*ks, blob, bl, &why);
+            break;
+        }
+      }
+      if (pass == 0) {
+        if (!ok) {
+          ++bad;
+          note("%s: %s; ", key, why);
+        }
+        continue;
+      }
+      esp_err_t e = ESP_FAIL;
+      switch (ks->type) {
+        case KeyType::U8: e = nvs_set_u8(h, key, v.as<uint8_t>()); break;
+        case KeyType::U16: e = nvs_set_u16(h, key, v.as<uint16_t>()); break;
+        case KeyType::Str: e = nvs_set_str(h, key, v.as<const char*>()); break;
+        case KeyType::Blob: e = nvs_set_blob(h, key, blob, bl); break;
+      }
+      if (e == ESP_OK) ++written;
+    }
+    if (pass == 1) {
+      nvs_set_u8(h, "cfg_ver", kCfgVersion);
+      nvs_commit(h);
+      nvs_close(h);
+      (void)skipped;
+      return written;
+    }
+  }
+  return -1;
+}
+
+void settings_migrate() {
+  nvs_handle_t h;
+  if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return;
+  uint8_t v = 0;
+  if (nvs_get_u8(h, "cfg_ver", &v) != ESP_OK) v = 0;
+  if (v < kCfgVersion) {
+    // 0 -> 1: the layout of v0.7.5 is version 1; nothing to convert yet.
+    // Future steps: if (v < 2) { ... rename/convert keys ... }
+    nvs_set_u8(h, "cfg_ver", kCfgVersion);
+    nvs_commit(h);
+    console_printf("Settings: config version %u -> %u\n", v, kCfgVersion);
+  }
   nvs_close(h);
-  return n;
 }
 
 // --- Termin-Erinnerungen ---------------------------------------------------------

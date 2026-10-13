@@ -802,6 +802,10 @@ bool txt_kb_ready(lv_obj_t* ta) {
   if (ta != txt_ta) return false;
   const char* v = lv_textarea_get_text(txt_ta);
   if (settings_pending || txt_busy) return true;
+  if (txt_which == kUrlOta && strncmp(v, "https://", 8) != 0) {
+    lv_label_set_text(txt_status, "Update-Adresse muss mit https:// beginnen");
+    return true;
+  }
   if (txt_which != kTextPlz && strncmp(v, "http://", 7) != 0 && strncmp(v, "https://", 8) != 0) {
     lv_label_set_text(txt_status, "Adresse muss mit http:// oder https:// beginnen");
     return true;

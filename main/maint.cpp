@@ -33,6 +33,7 @@ httpd_handle_t g_server = nullptr;
 // to the panel (CSRF). 5 wrong PINs lock the API for 60 s. The server switches
 // itself off 15 min after the last authenticated request.
 constexpr uint32_t kIdleOffMs = 15 * 60 * 1000;
+uint32_t g_idle_off_ms = kIdleOffMs;  // test harness may shorten (WEBIDLE)
 constexpr uint32_t kLockMs = 60 * 1000;
 constexpr uint32_t kGrantMs = 60 * 1000;
 constexpr int kMaxFails = 5;
@@ -210,15 +211,24 @@ esp_err_t on_restore(httpd_req_t* req) {
     }
     got += static_cast<size_t>(r);
   }
-  int n = settings_import_json(buf, got);
+  char report[384];
+  int n = settings_import_json(buf, got, report, sizeof(report));
+  memset(buf, 0, got);  // may hold secrets
   heap_caps_free(buf);
-  console_printf("Web: settings restore -> %d keys\n", n);
+  console_printf("Web: settings restore -> %d (%s)\n", n, report);  // report: key names only
   if (n < 0) {
+    char msg[480];
+    snprintf(msg, sizeof(msg), "%s%s",
+             n == -2   ? "Datei von neuerer Firmware - bitte erst Firmware aktualisieren. "
+             : n == -3 ? "Ungueltige Werte, nichts uebernommen: "
+                       : "Keine esp_display-Einstellungsdatei. ",
+             report);
     httpd_resp_set_status(req, "400 Bad Request");
-    return httpd_resp_sendstr(req, "Keine esp_display-Einstellungsdatei");
+    return httpd_resp_sendstr(req, msg);
   }
-  char msg[80];
-  snprintf(msg, sizeof(msg), "%d Einstellungen wiederhergestellt. Neustart ...", n);
+  char msg[480];
+  snprintf(msg, sizeof(msg), "%d Einstellungen wiederhergestellt. %s%sNeustart ...", n, report[0] ? "Ignoriert: " : "",
+           report);
   httpd_resp_sendstr(req, msg);
   schedule_restart();
   return ESP_OK;
@@ -399,7 +409,7 @@ const char* maint_web_pin() { return g_pin; }
 
 bool maint_web_tick() {
   if (g_server == nullptr) return false;
-  if (ms() - g_last_ms.load() > kIdleOffMs) {
+  if (ms() - g_last_ms.load() > g_idle_off_ms) {
     console_puts("Web: 15 min without access - switching off");
     maint_web_stop();
     return true;
@@ -414,3 +424,5 @@ void maint_secrets_answer(bool allow) {
   g_secrets_grant_until = allow ? ms() + kGrantMs : 0;
   console_printf("Web: secrets export %s on the panel\n", allow ? "allowed" : "denied");
 }
+
+void maint_web_set_idle_ms(uint32_t idle_ms) { g_idle_off_ms = idle_ms > 0 ? idle_ms : kIdleOffMs; }
