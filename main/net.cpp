@@ -7,6 +7,7 @@
 
 #include "esp_crt_bundle.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
 #include "freertos/task.h"
 #include "esp_event.h"
 #include "esp_http_client.h"
@@ -21,6 +22,13 @@ std::atomic<int> g_last_reason{0};      // last WIFI_REASON_* of a disconnect
 std::atomic<int> g_auth_fails{0};       // auth / handshake rejections since wifi_start
 std::atomic<int> g_noap_fails{0};       // "AP not found" since wifi_start
 esp_netif_t* g_netif = nullptr;
+// Bit 0: got IP; bit 1: a disconnect happened (waiters re-check the counters).
+constexpr EventBits_t kBitIp = 1, kBitDisc = 2;
+EventGroupHandle_t wifi_events() {
+  static StaticEventGroup_t buf;
+  static EventGroupHandle_t g = xEventGroupCreateStatic(&buf);
+  return g;
+}
 char g_ssid[33] = "";
 
 bool is_auth_reason(int r) {
@@ -34,6 +42,8 @@ void on_event(void*, esp_event_base_t base, int32_t id, void* data) {
     if (g_ssid[0] != '\0') esp_wifi_connect();  // empty SSID: station only for scanning
   } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
     g_connected = false;
+    xEventGroupClearBits(wifi_events(), kBitIp);
+    xEventGroupSetBits(wifi_events(), kBitDisc);
     auto* ev = static_cast<wifi_event_sta_disconnected_t*>(data);
     int reason = ev != nullptr ? ev->reason : 0;
     g_last_reason = reason;
@@ -52,9 +62,17 @@ void on_event(void*, esp_event_base_t base, int32_t id, void* data) {
   } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
     g_connected = true;
     g_failed = false;
+    xEventGroupSetBits(wifi_events(), kBitIp);
   }
 }
 }  // namespace
+
+bool wifi_wait(uint32_t ms) {
+  if (g_connected) return true;
+  xEventGroupClearBits(wifi_events(), kBitDisc);
+  xEventGroupWaitBits(wifi_events(), kBitIp | kBitDisc, pdFALSE, pdFALSE, pdMS_TO_TICKS(ms));
+  return g_connected;
+}
 
 void wifi_start(const char* ssid, const char* password, const char* hostname) {
   static bool inited = false;

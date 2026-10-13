@@ -384,7 +384,10 @@ bool maint_web_start() {
   g_last_ms = ms();
   httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
   cfg.core_id = 0;  // network work on core 0
-  cfg.stack_size = 8192;
+  // Measured (DIAGSTACK): ~2.8 KB of the old 8 KB stack used. Internal RAM is
+  // scarce, so a smaller stack and fewer sockets (one browser tab).
+  cfg.stack_size = 5120;
+  cfg.max_open_sockets = 3;
   cfg.lru_purge_enable = true;
   if (httpd_start(&g_server, &cfg) != ESP_OK) {
     g_server = nullptr;

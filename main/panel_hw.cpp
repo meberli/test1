@@ -390,6 +390,10 @@ bool panel_gt911_read(uint16_t reg, uint8_t* out, size_t n) { return touch_ok &&
 
 bool panel_lvgl_start() {
   lv_init();
+  // One PSRAM draw buffer on purpose: panel_flush rotates synchronously into
+  // the RGB framebuffer, so a second buffer would not overlap rendering and
+  // flushing, and 2 x 38 KB internal RAM is not available (DIAGSTACK minimum
+  // ~18 KB). Revisit together with an async (DMA/PPA) flush.
   constexpr uint32_t kLines = 40;
   uint32_t pixels = static_cast<uint32_t>(kPanelWidth) * kLines;
   lv_color_t* buf =

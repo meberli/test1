@@ -30,6 +30,7 @@
 #include <esp_log.h>
 
 static const char* const TAG = "app";
+static TaskHandle_t ui_handle = nullptr;
 
 #ifndef SERIAL_BAUD
 #define SERIAL_BAUD CONFIG_PANEL_SERIAL_BAUD
@@ -373,7 +374,7 @@ void net_settings(const SettingsRequest& s, NetResult* res) {
         if (wifi_connected() || el > kWifiSwitchMs) break;
         if (el > 8000 && wifi_auth_fails() >= kWifiAuthFails) break;
         if (el > 10000 && wifi_noap_fails() >= kWifiNoApFails) break;
-        vTaskDelay(pdMS_TO_TICKS(100));
+        wifi_wait(1000);  // wakes on got-IP or disconnect, re-checks the counters
       }
       res->ok = wifi_connected();
       snprintf(res->detail, sizeof(res->detail), "%s", s.creds.ssid);
@@ -388,7 +389,7 @@ void net_settings(const SettingsRequest& s, NetResult* res) {
         snprintf(res->title, sizeof(res->title), "%s", old.ssid);
         wifi_start(old.ssid, old.pass, "loxone-panel");
         t0 = now_ms();
-        while (!wifi_connected() && now_ms() - t0 < kWifiTimeoutMs) vTaskDelay(pdMS_TO_TICKS(100));
+        while (!wifi_connected() && now_ms() - t0 < kWifiTimeoutMs) wifi_wait(kWifiTimeoutMs - (now_ms() - t0));
         res->index = wifi_connected() ? 1 : 0;  // reverted and connected again
         console_printf("Wi-Fi back on \"%s\": %s\n", old.ssid, wifi_connected() ? "connected" : "still trying");
       } else {
@@ -587,7 +588,7 @@ void net_task(void*) {
         break;
     }
     xQueueSend(res_q, &res, portMAX_DELAY);
-    vTaskDelay(1);
+    if (ui_handle != nullptr) xTaskNotifyGive(ui_handle);  // wake the UI loop for the result
   }
   vTaskDelete(nullptr);  // not reached
 }
@@ -878,12 +879,15 @@ void ui_task(void*) {
     harness_poll();
     poll();
     int64_t t2 = esp_timer_get_time();
-    lv_timer_handler();
+    uint32_t next_ms = lv_timer_handler();
     int64_t t3 = esp_timer_get_time();
     diag_ui_loop(static_cast<uint32_t>((t1 - t0) > (t3 - t2) ? (t1 - t0) : (t3 - t2)), static_cast<uint32_t>(t2 - t1),
                  static_cast<uint32_t>(t3 - t0));
     if (phase == Phase::Ready) diag_ui_first_interactive();
-    vTaskDelay(pdMS_TO_TICKS(5));
+    // Sleep until LVGL's next timer is due (max 10 ms for console/harness
+    // polling) or the network task notifies a result.
+    uint32_t wait = next_ms < 1 ? 1 : (next_ms > 10 ? 10 : next_ms);
+    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(wait));
   }
   vTaskDelete(nullptr);  // not reached
 }
@@ -899,5 +903,5 @@ void app_start() {
   res_q = xQueueCreate(2, sizeof(NetResult));
   // Network and protocol work on core 0 (with the Wi-Fi stack), UI on core 1.
   xTaskCreatePinnedToCore(net_task, "net", 12 * 1024, nullptr, 4, nullptr, 0);
-  xTaskCreatePinnedToCore(ui_task, "ui", 16 * 1024, nullptr, 5, nullptr, 1);
+  xTaskCreatePinnedToCore(ui_task, "ui", 16 * 1024, nullptr, 5, &ui_handle, 1);
 }

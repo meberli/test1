@@ -13,6 +13,9 @@ bool wifi_failed();
 int wifi_auth_fails();   // auth / 4-way handshake rejections since wifi_start
 int wifi_noap_fails();   // "no AP found" since wifi_start
 int wifi_last_reason();  // last WIFI_REASON_* of a disconnect
+// Blocks (event group, no polling) until connected, a disconnect event arrives
+// or ms elapse. Returns wifi_connected(). Network task only.
+bool wifi_wait(uint32_t ms);
 // Blocking scan (call from the network task). Returns the number of APs,
 // strongest first, duplicates merged.
 int wifi_scan(WifiAp* out, int cap);

@@ -25,6 +25,8 @@ CONFIG_SPIRAM_USE_MALLOC=y
 # for TLS/AES DMA buffers ("esp-aes: Failed to allocate memory").
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=2048
 CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
+# Not CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP: measured on IDF 6.1 it lowered
+# free internal RAM (96 -> 69 KB, minimum 27 -> 7 KB).
 # RGB LCD: run code/rodata from PSRAM so flash operations (NVS, Wi-Fi
 # calibration) do not stall the panel; bounce buffers are set in panel_hw.cpp.
 CONFIG_SPIRAM_XIP_FROM_PSRAM=y
