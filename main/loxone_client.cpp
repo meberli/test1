@@ -11,6 +11,7 @@
 #include "loxone_types.h"
 #include "net.h"
 #include "settings.h"
+#include "strings_de.h"
 
 namespace {
 
@@ -65,11 +66,11 @@ LoxoneHttpResult loxone_get(LoxoneAuthorizer& auth, const char* path, uint8_t* b
     *out_len = 0;
   }
   if (path == nullptr || path[0] != '/' || body == nullptr || cap == 0) {
-    set_detail(&result, "Bad request");
+    set_detail(&result, str::kLoxBadRequest);
     return result;
   }
   if (!wifi_connected()) {
-    set_detail(&result, "Wi-Fi is down");
+    set_detail(&result, str::kLoxWifiDown);
     return result;
   }
 
@@ -94,7 +95,7 @@ LoxoneHttpResult loxone_get(LoxoneAuthorizer& auth, const char* path, uint8_t* b
     return result;
   }
   if (code == 401) {
-    set_detail(&result, "Miniserver rejected the login");
+    set_detail(&result, str::kLoxLoginRejected);
     return result;
   }
   if (!r.ok) {
@@ -108,7 +109,7 @@ LoxoneHttpResult loxone_get(LoxoneAuthorizer& auth, const char* path, uint8_t* b
     return result;
   }
   if (total == 0) {
-    set_detail(&result, "Empty response");
+    set_detail(&result, str::kLoxEmpty);
     return result;
   }
   if (out_len != nullptr) {
@@ -122,14 +123,14 @@ LoxoneHttpResult loxone_get(LoxoneAuthorizer& auth, const char* path, uint8_t* b
 LoxoneHttpResult loxone_send_command(LoxoneAuthorizer& auth, const char* action, const char* command) {
   LoxoneHttpResult result = {};
   if (!loxone_id_ok(action, 40) || !loxone_id_ok(command, 16)) {
-    set_detail(&result, "Control id was rejected");
+    set_detail(&result, str::kLoxIdRejected);
     return result;
   }
 
   char path[96];
   int wrote = snprintf(path, sizeof(path), "/jdev/sps/io/%s/%s", action, command);
   if (wrote <= 0 || static_cast<size_t>(wrote) >= sizeof(path)) {
-    set_detail(&result, "Control path was too long");
+    set_detail(&result, str::kLoxPathTooLong);
     return result;
   }
 
@@ -158,7 +159,7 @@ LoxoneHttpResult loxone_send_command(LoxoneAuthorizer& auth, const char* action,
     } else if (code.is<const char*>()) {
       snprintf(result.detail, sizeof(result.detail), "Miniserver code %s", code.as<const char*>());
     } else {
-      set_detail(&result, "Miniserver rejected the command");
+      set_detail(&result, str::kLoxCommandRejected);
     }
   }
   return result;
@@ -258,7 +259,7 @@ bool fetch_ll_value(LoxoneAuthorizer& auth, const char* id, const char* command,
   char path[96];
   int wrote = snprintf(path, sizeof(path), "/jdev/sps/io/%s/%s", id, command);
   if (wrote <= 0 || static_cast<size_t>(wrote) >= sizeof(path)) {
-    set_detail(result, "State path was too long");
+    set_detail(result, str::kLoxPathTooLong);
     return false;
   }
   static uint8_t body[1200];
@@ -275,7 +276,7 @@ bool fetch_ll_value(LoxoneAuthorizer& auth, const char* id, const char* command,
   }
   if (deserializeJson(doc, json, json_len) != DeserializationError::Ok) {
     result->ok = false;
-    set_detail(result, "State response was not JSON");
+    set_detail(result, str::kLoxStateNotJson);
     return false;
   }
   JsonObject ll = doc["LL"].as<JsonObject>();
@@ -285,7 +286,7 @@ bool fetch_ll_value(LoxoneAuthorizer& auth, const char* id, const char* command,
   }
   if (!code.isNull() && !code_is_200(code)) {
     result->ok = false;
-    set_detail(result, "State was not available");
+    set_detail(result, str::kLoxStateUnavailable);
     return false;
   }
   *raw = ll["value"];
@@ -294,7 +295,7 @@ bool fetch_ll_value(LoxoneAuthorizer& auth, const char* id, const char* command,
   }
   if (raw->isNull()) {
     result->ok = false;
-    set_detail(result, "State had no value");
+    set_detail(result, str::kLoxStateNoValue);
     return false;
   }
   return true;
@@ -304,7 +305,7 @@ LoxoneHttpResult loxone_read_state(LoxoneAuthorizer& auth, const char* action, c
                                    LoxoneKind kind, char* value, size_t value_n) {
   LoxoneHttpResult result = {};
   if (value == nullptr || value_n == 0) {
-    set_detail(&result, "State id was rejected");
+    set_detail(&result, str::kLoxStateIdRejected);
     return result;
   }
   value[0] = '\0';
@@ -357,7 +358,7 @@ LoxoneHttpResult loxone_read_state(LoxoneAuthorizer& auth, const char* action, c
     return result;
   }
   if (result.detail[0] == '\0') {
-    set_detail(&result, "State was not available");
+    set_detail(&result, str::kLoxStateUnavailable);
   }
   result.ok = false;
   return result;

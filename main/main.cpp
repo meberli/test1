@@ -29,6 +29,7 @@
 #include "test_harness.h"
 #include <esp_log.h>
 #include "freertos/idf_additions.h"
+#include "strings_de.h"
 
 static const char* const TAG = "app";
 static TaskHandle_t ui_handle = nullptr;
@@ -240,15 +241,6 @@ bool fetch_buchs_weather(int* temp_c, int* code, WeatherDay* days, int* week_cou
   return n >= 2;
 }
 
-const char* kNotConfiguredBody =
-    "Wi-Fi and Miniserver settings are missing.\n\n"
-    "Copy include/panel_config.example.h\n"
-    "to include/panel_config.h, fill in the\n"
-    "local Miniserver, then rebuild and\n"
-    "flash over USB.\n\n"
-    "Relay 1 stays off until you open\n"
-    "Schalter on the home screen\n"
-    "and tap Relais.";
 
 
 // ---------------------------------------------------------------------------
@@ -341,15 +333,15 @@ void lox_post(const NetRequest& r) {
 void net_load(NetResult* res) {
   uint8_t* buf = static_cast<uint8_t*>(heap_caps_malloc(kStructureCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   if (buf == nullptr) {
-    snprintf(res->title, sizeof(res->title), "Out of memory");
-    snprintf(res->detail, sizeof(res->detail), "The panel could not allocate a buffer for LoxAPP3.json.");
+    snprintf(res->title, sizeof(res->title), "%s", str::kOutOfMemoryTitle);
+    snprintf(res->detail, sizeof(res->detail), "%s", str::kOutOfMemoryBody);
     return;
   }
   size_t length = 0;
   LoxoneHttpResult http = loxone_get(*auth, "/data/LoxAPP3.json", buf, kStructureCap - 1, &length);
   if (!http.ok) {
     heap_caps_free(buf);
-    snprintf(res->title, sizeof(res->title), "Miniserver unreachable");
+    snprintf(res->title, sizeof(res->title), "%s", str::kUnreachableTitle);
     snprintf(res->detail, sizeof(res->detail), "%s", http.detail);
     return;
   }
@@ -357,7 +349,7 @@ void net_load(NetResult* res) {
                                        res->server, sizeof(res->server), res->detail, sizeof(res->detail));
   heap_caps_free(buf);
   if (!parsed) {
-    snprintf(res->title, sizeof(res->title), "Could not read Loxone");
+    snprintf(res->title, sizeof(res->title), "%s", str::kLoadFailedTitle);
     return;
   }
   console_printf("LoxAPP3 %u bytes, %u controls shown, %u supported\n", static_cast<unsigned>(length),
@@ -653,7 +645,7 @@ void handle_result(const NetResult& res) {
       phase = Phase::Ready;
       ui_show_controls(controls, res.shown, res.supported, res.server[0] != '\0' ? res.server : "Loxone");
       if (!panel_touch_ok()) {
-        ui_set_status("Touch controller not found");
+        ui_set_status(str::kStatusNoTouch);
       }
       break;
     case NetOp::Command:
@@ -771,7 +763,7 @@ void poll() {
         clock_sntp_kick();
         maint_mark_valid();  // UI runs and Wi-Fi works: keep this image after an OTA update
         ui_set_wifi_name(wifi_ssid());
-        ui_set_status("Wi-Fi connected");
+        ui_set_status(str::kStatusConnected);
       } else if (now_ms() - wifi_started_ms > kWifiTimeoutMs) {
         // Not on the first rejection (WPA3 routers often refuse the first SAE
         // attempt): only after the timeout. The saved network stays in NVS and
@@ -786,7 +778,7 @@ void poll() {
       break;
     case Phase::Loading: {
       if (!load_painted) {
-        ui_show_message("Loading", "Reading /data/LoxAPP3.json from the Miniserver.", false);
+        ui_show_message(str::kLoadingTitle, str::kLoadingBody, false);
         load_painted = true;
         break;
       }
@@ -798,7 +790,7 @@ void poll() {
     }
     case Phase::Ready: {
       if (!wifi_connected()) {
-        ui_set_status("Wi-Fi disconnected");
+        ui_set_status(str::kStatusDisconnected);
         break;
       }
       NetRequest r = {};
@@ -845,8 +837,8 @@ void poll() {
       if (ui_take_retry()) {
         start_wifi();
         phase = Phase::Wifi;
-        ui_show_message("Connecting", "Joining Wi-Fi.", false);
-        ui_set_status("Connecting to Wi-Fi");
+        ui_show_message(str::kConnectingTitle, str::kConnectingBody, false);
+        ui_set_status(str::kStatusConnecting);
       }
       break;
     }
@@ -895,8 +887,8 @@ void ui_task(void*) {
     phase = Phase::NotConfigured;
     console_puts(PANEL_CONFIG_PRESENT ? "panel_config.h is missing Wi-Fi, host, or user"
                                       : "panel_config.h not found; not configured");
-    ui_show_message("Not configured", kNotConfiguredBody, false);
-    ui_set_status("Relay off");
+    ui_show_message(str::kNotConfiguredTitle, str::kNotConfiguredBody, false);
+    ui_set_status(str::kStatusRelayOff);
   } else if (!have_wifi) {
     // Miniserver known, but no Wi-Fi saved: straight to the WLAN selection.
     phase = Phase::Failed;
@@ -906,13 +898,13 @@ void ui_task(void*) {
     ui_wifi_setup_open("", 0);
   } else if (auth == nullptr) {
     phase = Phase::Failed;
-    ui_show_message("Not configured", "LOXONE_AUTH must be \"basic\" or \"token\".", false);
+    ui_show_message(str::kNotConfiguredTitle, str::kBadAuthBody, false);
   } else {
     console_printf("Auth scheme %s\n", auth->name());
     start_wifi();
     phase = Phase::Wifi;
-    ui_show_message("Connecting", "Joining Wi-Fi.", false);
-    ui_set_status("Connecting to Wi-Fi");
+    ui_show_message(str::kConnectingTitle, str::kConnectingBody, false);
+    ui_set_status(str::kStatusConnecting);
   }
 
   diag_start();

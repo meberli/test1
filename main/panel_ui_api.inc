@@ -79,7 +79,7 @@ void ui_wifi_setup_close() {
     hide_settings();
     nav = Nav::Home;
   }
-  ui_show_message("Connecting", "Joining Wi-Fi.", false);
+  ui_show_message(str::kConnectingTitle, str::kConnectingBody, false);
 }
 
 void ui_geocode_done(bool ok, const GeoPlace* places, int n) {
