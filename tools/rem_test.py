@@ -55,6 +55,7 @@ def main():
     p.s.write(b"REBOOT\n")
     time.sleep(3)
     s = wait(p, lambda s: "STATE home" in s, 60)
+    p.cmd("SCRTO 0")  # runtime only: the saved timeout (e.g. 30 s) would blank the screen
     check("STATE home" in s, "boot to home")
     saver0 = field(s, "saver")
     to0 = field(s, "to")
@@ -137,10 +138,14 @@ def main():
     ack_all(p)
 
     # Waste (all-day today) with lead Vorabend 18:00 -> pending
+    # (shown until "Hinweis am Abfuhrtag bis": use the latest cutoff, then restore the saved one)
+    until0 = int(p.cmd("WASTEUNTIL", expect=("WASTEUNTIL",)).split()[1])
+    p.cmd("WASTEUNTIL 1440", expect=("WASTEUNTIL",))
     p.cmd("REMTEST 0 1", expect=("OK",))
     time.sleep(1)
     s = state(p)
     check(rem(s) == 1, "waste today (Vorabend 18:00) queued")
+    p.cmd(f"WASTEUNTIL {until0}", expect=("WASTEUNTIL",))
     shot("home_waste")
     ack_all(p)
 
@@ -150,6 +155,7 @@ def main():
     p.s.write(b"REBOOT\n")
     time.sleep(3)
     wait(p, lambda s: "STATE home" in s, 60)
+    p.cmd("SCRTO 0")  # runtime only: the saved timeout (e.g. 30 s) would blank the screen
     time.sleep(40)
     s = state(p)
     check(rem(s) == 0, f"no acknowledged reminder after reboot ({rem(s)} pending)")

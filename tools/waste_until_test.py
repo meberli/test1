@@ -4,7 +4,7 @@ Injects a waste collection today (WASTETEST), sets the cutoff after and
 before now, checks the home chip and the reminder card, then restores the
 saved cutoff. Usage: python tools/waste_until_test.py COM14
 """
-import sys, time
+import os, sys, time
 sys.path.insert(0, "tools")
 from panel_test import Panel
 from info_test import state, wait, tapn, home
@@ -24,6 +24,15 @@ def main():
     home(p)
     saved = int(p.cmd("WASTEUNTIL", expect=("WASTEUNTIL",)).split()[1])
     print("saved cutoff", saved)
+    os.makedirs("v10shots", exist_ok=True)
+    try:
+        run(p, saved)
+    finally:  # never leave the user's cutoff changed
+        p.cmd(f"WASTEUNTIL {saved}", expect=("WASTEUNTIL",))
+    print("RESULT", "OK" if not FAILS else f"{len(FAILS)} FAIL")
+
+
+def run(p, saved):
     lt = time.localtime(); now_min = lt.tm_hour * 60 + lt.tm_min
     r0 = rem(state(p))  # (no REMCLEAR: keeps the acknowledged reminders)
     p.cmd(f"WASTEUNTIL {min(now_min + 5, 1440)}", expect=("WASTEUNTIL",))
@@ -49,7 +58,6 @@ def main():
     check(v != saved, f"tap steps the preset {saved} -> {v}")
     p.cmd(f"WASTEUNTIL {saved}", expect=("WASTEUNTIL",))
     check(int(p.cmd("WASTEUNTIL", expect=("WASTEUNTIL",)).split()[1]) == saved, "restored")
-    print("RESULT", "OK" if not FAILS else f"{len(FAILS)} FAIL")
 
 if __name__ == "__main__":
     main()
