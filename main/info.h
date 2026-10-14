@@ -45,6 +45,10 @@ struct Calendar {
   bool ok_events;   // false: URL missing or fetch failed
   bool ok_waste;
   bool have_events_url;
+  char waste_name[40];  // Gemeinde from the Abfallkalender-API ("Buchs")
+  int waste_zones;      // zones in the answer (0: whole Gemeinde)
+  bool waste_zone_used; // the configured zone was found
+  int waste_http;       // last API answer: 200, 400/404/503, 0 = no connection / not tried
   int64_t fetched;
 };
 
@@ -77,5 +81,7 @@ const char* warning_name(uint8_t type);  // German
 // Network task only.
 int transit_search(const char* query, Station* out, int cap);  // -1 on error
 bool transit_board(const Station& st, Board* out);
-bool calendar_fetch(const char* ical_url, const char* waste_url, Calendar* out);
+// Waste: Abfallkalender-API <waste_base>/api/abfallkalender?gemeinde=<bfs>, fetched at
+// most once per day (and again when base/BFS/zone change; after a failure at most hourly).
+bool calendar_fetch(const char* ical_url, const char* waste_base, const char* bfs, const char* zone, Calendar* out);
 bool meteo_fetch(const char* plz, MeteoNow* out);

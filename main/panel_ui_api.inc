@@ -314,7 +314,8 @@ void ui_station_saved(bool ok, int idx) {
 
 void ui_text_saved(bool ok, uint8_t which) {
   txt_busy = false;
-  if (ok && (which == kUrlIcal || which == kUrlWaste)) cal_next_ms = now_ms();  // reload the calendar
+  if (ok && (which == kUrlIcal || which == kUrlWaste || which == kTextWasteBfs || which == kTextWasteZone))
+    cal_next_ms = now_ms();  // reload the calendar
   if (ok && which == kTextPlz) meteo_next_ms = now_ms();
   if (nav == Nav::TextEdit) {
     if (ok) txt_go_back();

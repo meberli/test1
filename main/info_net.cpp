@@ -6,6 +6,7 @@
 #include <time.h>
 
 #include "esp_heap_caps.h"
+#include "waste_api.h"
 #include "net.h"
 #include "sys.h"
 #include <esp_log.h>
@@ -155,7 +156,76 @@ bool transit_board(const Station& st, Board* out) {
   return true;
 }
 
-bool calendar_fetch(const char* ical_url, const char* waste_url, Calendar* out) {
+namespace {
+
+// --- Abfallkalender-API: own cache, at most one fetch per day ---
+struct WasteCache {
+  uint32_t key;       // hash of base + BFS + zone
+  int ok_day;         // year * 1000 + yday of the last good fetch (-1: none)
+  int64_t tried;      // Unix seconds of the last attempt
+  int http;           // status of the last attempt
+  bool ok;
+  int n;
+  CalEvent ev[kMaxWaste];
+  WasteApiInfo info;
+};
+WasteCache g_waste = {0, -1, 0, 0, false, 0, {}, {}};
+
+void waste_update(const char* base, const char* bfs, const char* zone, int64_t now, int64_t midnight,
+                  const struct tm& lt) {
+  if (base == nullptr || base[0] == '\0' || bfs == nullptr || bfs[0] == '\0') {
+    g_waste.ok = false;
+    g_waste.n = 0;
+    g_waste.key = 0;
+    return;
+  }
+  uint32_t key = cal_hash(zone != nullptr ? zone : "", cal_hash(bfs, cal_hash(base)));
+  int today = (lt.tm_year + 1900) * 1000 + lt.tm_yday;
+  bool changed = key != g_waste.key;
+  if (!changed && g_waste.ok && g_waste.ok_day == today) return;            // once per day
+  if (!changed && g_waste.tried != 0 && now - g_waste.tried < 3600) return;  // failed: retry hourly
+  g_waste.key = key;
+  g_waste.tried = now;
+  if (changed) {
+    g_waste.ok = false;
+    g_waste.n = 0;
+    memset(&g_waste.info, 0, sizeof(g_waste.info));
+  }
+  char url[320];
+  if (!waste_api_url(url, sizeof(url), base, bfs, lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday)) return;
+  constexpr size_t kCap = 64 * 1024;
+  uint8_t* body = psram(kCap + 1);
+  if (body == nullptr) return;
+  HttpGetResult http = http_get(url, nullptr, nullptr, body, kCap, 20000);
+  g_waste.http = http.status;
+  if (http.ok && http.status == 200) {
+    CalEvent ev[kMaxWaste];
+    WasteApiInfo info;
+    int n = waste_parse_api(reinterpret_cast<char*>(body), http.length, zone, midnight, now + 45LL * 86400, ev,
+                            kMaxWaste, local_mktime, &info);
+    if (n >= 0) {
+      for (int i = 0; i < n; ++i) sanitize(ev[i].title);
+      sanitize(info.gemeinde);
+      memcpy(g_waste.ev, ev, sizeof(ev));
+      g_waste.n = n;
+      g_waste.info = info;
+      g_waste.ok = true;
+      g_waste.ok_day = today;
+      console_printf("Waste: %s (%d), %d dates, %d zones%s (%u bytes)\n", info.gemeinde, info.bfs, n, info.zones,
+                     info.zone_used ? ", zone used" : "", static_cast<unsigned>(http.length));
+    } else {
+      console_printf("Waste API: unreadable answer (%u bytes)\n", static_cast<unsigned>(http.length));
+    }
+  } else {
+    // 400: BFS missing, 404: unknown Gemeinde, 503: no data yet
+    console_printf("Waste API: HTTP %d %s\n", http.status, http.error);
+  }
+  heap_caps_free(body);
+}
+
+}  // namespace
+
+bool calendar_fetch(const char* ical_url, const char* waste_base, const char* bfs, const char* zone, Calendar* out) {
   memset(out, 0, sizeof(*out));
   const int64_t now = time(nullptr);
   // Today from local midnight, so all-day entries of today still count.
@@ -185,29 +255,16 @@ bool calendar_fetch(const char* ical_url, const char* waste_url, Calendar* out) 
       heap_caps_free(body);
     }
   }
-  if (waste_url != nullptr && waste_url[0] != '\0') {
-    constexpr size_t kCap = 1024 * 1024;  // the Buchs SG page is ~650 KB of HTML
-    uint8_t* body = psram(kCap + 1);
-    if (body != nullptr) {
-      HttpGetResult http = http_get(waste_url, nullptr, nullptr, body, kCap, 30000);
-      if (http.ok && http.status == 200) {
-        body[http.length] = 0;
-        if (http.length > 15 && memcmp(body, "BEGIN:VCALENDAR", 15) == 0) {
-          out->n_waste = ical_parse(reinterpret_cast<char*>(body), http.length, midnight, now + 45LL * 86400,
-                                    out->waste, kMaxWaste, 1, local_mktime);
-        } else {
-          out->n_waste = waste_parse_html(reinterpret_cast<char*>(body), http.length, midnight, now + 45LL * 86400,
-                                          out->waste, kMaxWaste, local_mktime);
-        }
-        for (int i = 0; i < out->n_waste; ++i) sanitize(out->waste[i].title);
-        out->ok_waste = out->n_waste > 0;
-        console_printf("Waste: %d dates (%u bytes)\n", out->n_waste, static_cast<unsigned>(http.length));
-      } else {
-        ESP_LOGW(TAG, "Waste HTTP %d %s", http.status, http.error);
-      }
-      heap_caps_free(body);
-    }
+  waste_update(waste_base, bfs, zone, now, midnight, lt);
+  for (int i = 0; i < g_waste.n; ++i) {
+    if (g_waste.ev[i].start + 86399 < midnight) continue;  // passed since the last fetch
+    out->waste[out->n_waste++] = g_waste.ev[i];
   }
+  out->ok_waste = g_waste.ok;
+  snprintf(out->waste_name, sizeof(out->waste_name), "%s", g_waste.info.gemeinde);
+  out->waste_zones = g_waste.info.zones;
+  out->waste_zone_used = g_waste.info.zone_used;
+  out->waste_http = g_waste.http;
   out->fetched = now;
   return out->ok_events || out->ok_waste;
 }

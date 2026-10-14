@@ -42,12 +42,18 @@ config PANEL_ICAL_URL
         gitignored sdkconfig.defaults.local. Can be changed in
         Einstellungen > Kalender.
 
-config PANEL_WASTE_URL
-    string "Waste collection calendar (web page or .ics)"
-    default "https://buchs-sg.ch/abfallkalender/"
+config PANEL_WASTE_API
+    string "Abfallkalender API base URL (https)"
+    default "https://abfall-sg.hispeed.workers.dev"
     help
-        The Buchs SG Abfallkalender page (its add-to-calendar entries are
-        read) or any iCalendar (.ics) address.
+        Base of the Abfallkalender-API (GET <base>/api/abfallkalender?gemeinde=<BFS>).
+        Can be changed in Einstellungen > Kalender.
+
+config PANEL_WASTE_BFS
+    string "Gemeinde (BFS number) for the waste calendar"
+    default "3271"
+    help
+        BFS number of the Gemeinde (3271 = Buchs SG). <base>/api/gemeinden lists them.
 
 config PANEL_OTA_URL
     string "Firmware update URL (build default)"

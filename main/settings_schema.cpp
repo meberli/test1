@@ -35,7 +35,10 @@ const KeySpec kSchema[] = {
     {"scr_saver", KeyType::U8, 0, kSaverAnalog, 0, 0},
     {"ical_url", KeyType::Str, 8, 255, kKeySecret | kKeyUrl, 0},
     {"ical_dflt", KeyType::Str, 0, 255, kKeySecret | kKeyUrl, 0},
-    {"waste_url", KeyType::Str, 8, 255, kKeyUrl, 0},
+    {"waste_url", KeyType::Str, 8, 255, kKeyUrl, 0},  // unused since 0.8.2 (old buchs-sg.ch page); kept for old backups
+    {"waste_api", KeyType::Str, 9, 255, kKeyUrl | kKeyHttpsOnly, 0},
+    {"waste_bfs", KeyType::Str, 4, 4, kKeyDigits, 0},
+    {"waste_zone", KeyType::Str, 1, 95, 0, 0},
     {"ota_url", KeyType::Str, 9, 255, kKeyUrl | kKeyHttpsOnly, 0},
     {"meteo_plz", KeyType::Str, 4, 4, kKeyDigits, 0},
     {"rem_on", KeyType::U8, 0, 1, 0, 0},

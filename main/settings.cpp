@@ -352,13 +352,14 @@ bool settings_save_station(int i, const Station& st) {
 }
 
 namespace {
-const char* const kTextKey[kTextSettingN] = {"ical_url", "waste_url", "ota_url", "meteo_plz"};
+const char* const kTextKey[kTextSettingN] = {"ical_url", "waste_api", "ota_url", "meteo_plz", "waste_bfs", "waste_zone"};
 }  // namespace
 
 const char* settings_text_default(TextSetting which) {
   switch (which) {
     case kUrlIcal: return CONFIG_PANEL_ICAL_URL;
-    case kUrlWaste: return CONFIG_PANEL_WASTE_URL;
+    case kUrlWaste: return CONFIG_PANEL_WASTE_API;
+    case kTextWasteBfs: return CONFIG_PANEL_WASTE_BFS;
     case kUrlOta: return CONFIG_PANEL_OTA_URL;
     case kTextPlz: return CONFIG_PANEL_METEO_PLZ;
     default: return "";

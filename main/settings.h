@@ -98,10 +98,20 @@ bool settings_save_station(int i, const Station& st);
 // --- Text settings with a build default (URLs) ---
 // kUrlIcal: family calendar (private: NVS "ical_url", else CONFIG_PANEL_ICAL_URL
 //           from the gitignored sdkconfig.defaults.local)
-// kUrlWaste: waste calendar (Buchs SG Abfallkalender page or any .ics)
+// kUrlWaste: Abfallkalender-API base URL (https only)
 // kUrlOta: firmware image for "Update aus dem Internet"
 // kTextPlz: MeteoSchweiz location (PLZ + 2 digits, "947000" = 9470 Buchs SG)
-enum TextSetting : uint8_t { kUrlIcal = 0, kUrlWaste = 1, kUrlOta = 2, kTextPlz = 3, kTextSettingN = 4 };
+// kTextWasteBfs: Gemeinde (BFS number) for the Abfallkalender-API
+// kTextWasteZone: zone / tour key of the API answer (multi-tour Gemeinden; empty = all)
+enum TextSetting : uint8_t {
+  kUrlIcal = 0,
+  kUrlWaste = 1,  // Abfallkalender-API base URL (https)
+  kUrlOta = 2,
+  kTextPlz = 3,
+  kTextWasteBfs = 4,
+  kTextWasteZone = 5,
+  kTextSettingN = 6
+};
 // own = true when the value came from NVS. Returns false if empty.
 bool settings_load_text(TextSetting which, char* out, size_t n, bool* own);
 bool settings_save_text(TextSetting which, const char* value);  // "" = back to the build default

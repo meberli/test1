@@ -89,7 +89,7 @@ int st_hit_n = 0;
 bool st_busy = false;
 
 lv_obj_t* calset_root = nullptr;
-lv_obj_t* calset_val[2] = {};
+lv_obj_t* calset_val[4] = {};  // iCal, Gemeinde (BFS), API, Zone
 lv_obj_t* calset_until_val = nullptr;
 uint16_t waste_until_min = kWasteUntilDefault;  // loaded in ui_init
 constexpr uint16_t kWasteUntilPresets[] = {420, 480, 540, 600, 720, 840, 1080, 1440};
@@ -698,7 +698,8 @@ bool st_kb_ready(lv_obj_t* ta) {
 
 // --- Settings: generic text (calendar URLs, update URL) ---------------------------
 
-const char* kTextTitle[kTextSettingN] = {"Familienkalender (iCal)", "Abfallkalender", "Update-URL", "MeteoSchweiz PLZ"};
+const char* kTextTitle[kTextSettingN] = {"Familienkalender (iCal)", "Abfallkalender-API", "Update-URL",
+                                         "MeteoSchweiz PLZ",        "Gemeinde (BFS-Nr.)", "Abfuhr-Zone"};
 
 // "https://calendar.google.com/…e4f825" style summary; secrets show host only.
 void url_summary(char* out, size_t n, uint8_t which, const char* v, bool own) {
@@ -720,10 +721,27 @@ void url_summary(char* out, size_t n, uint8_t which, const char* v, bool own) {
 void calset_refresh() {
   char v[256], sum[96];
   bool own = false;
-  for (int i = 0; i < 2; ++i) {
-    settings_load_text(static_cast<TextSetting>(i), v, sizeof(v), &own);
-    url_summary(sum, sizeof(sum), static_cast<uint8_t>(i), v, own);
-    if (calset_val[i] != nullptr) lv_label_set_text(calset_val[i], sum);
+  const uint8_t kRowText[4] = {kUrlIcal, kTextWasteBfs, kUrlWaste, kTextWasteZone};
+  for (int i = 0; i < 4; ++i) {
+    if (calset_val[i] == nullptr) continue;
+    uint8_t w = kRowText[i];
+    settings_load_text(static_cast<TextSetting>(w), v, sizeof(v), &own);
+    if (w == kTextWasteBfs) {
+      bool named = cal != nullptr && cal_have && cal->waste_name[0] != '\0';
+      int h = cal != nullptr && cal_have && !cal->ok_waste ? cal->waste_http : 200;
+      const char* err = h == 404 ? " - unbekannt" : h == 503 ? " - noch keine Daten" : h != 200 ? " - Fehler" : "";
+      snprintf(sum, sizeof(sum), "%s%s%s%s%s", named ? cal->waste_name : "", named ? " \xC2\xB7 " : "", v,
+               own ? "" : " (Standard)", err);
+    } else if (w == kTextWasteZone) {
+      int z = cal != nullptr && cal_have ? cal->waste_zones : 0;
+      if (v[0] != '\0')
+        snprintf(sum, sizeof(sum), "%s%s", v, z > 0 && !cal->waste_zone_used ? " (nicht gefunden)" : "");
+      else
+        snprintf(sum, sizeof(sum), z > 0 ? "alle (%d Zonen, bitte w\xC3\xA4hlen)" : "ganze Gemeinde", z);
+    } else {
+      url_summary(sum, sizeof(sum), w, v, own);
+    }
+    lv_label_set_text(calset_val[i], sum);
   }
   memset(v, 0, sizeof(v));
   if (calset_until_val != nullptr) {
@@ -756,13 +774,16 @@ void open_text(uint8_t which, Nav back) {
   bool own = false;
   settings_load_text(static_cast<TextSetting>(which), v, sizeof(v), &own);
   if (which == kUrlIcal) url_summary(sum, sizeof(sum), which, v, own);
+  else if (which == kTextWasteZone && v[0] == '\0') snprintf(sum, sizeof(sum), "keine (ganze Gemeinde)");
   else snprintf(sum, sizeof(sum), "%s%s", v[0] != '\0' ? v : "nicht gesetzt", own ? "" : " (Standard)");
   memset(v, 0, sizeof(v));
   lv_label_set_text(txt_cur, sum);
   lv_textarea_set_text(txt_ta, "");
   lv_textarea_set_password_mode(txt_ta, which == kUrlIcal);
   lv_label_set_text(txt_status, which == kUrlIcal ? "Neue geheime iCal-Adresse eingeben, dann OK"
-                                : which == kUrlWaste ? "Webseite (Buchs SG) oder .ics-Adresse, dann OK"
+                                : which == kUrlWaste ? "Basis-Adresse der API (https://...), dann OK"
+                                : which == kTextWasteBfs ? "BFS-Nummer der Gemeinde (Buchs SG = 3271), dann OK"
+                                : which == kTextWasteZone ? "Zone/Tour genau wie in der API, dann OK"
                                                      : "Neue Adresse eingeben, dann OK");
   show(txt_root);
 }
@@ -802,11 +823,19 @@ bool txt_kb_ready(lv_obj_t* ta) {
   if (ta != txt_ta) return false;
   const char* v = lv_textarea_get_text(txt_ta);
   if (settings_pending || txt_busy) return true;
-  if (txt_which == kUrlOta && strncmp(v, "https://", 8) != 0) {
-    lv_label_set_text(txt_status, "Update-Adresse muss mit https:// beginnen");
+  if ((txt_which == kUrlOta || txt_which == kUrlWaste) && strncmp(v, "https://", 8) != 0) {
+    lv_label_set_text(txt_status, "Adresse muss mit https:// beginnen");
     return true;
   }
-  if (txt_which != kTextPlz && strncmp(v, "http://", 7) != 0 && strncmp(v, "https://", 8) != 0) {
+  if (txt_which == kTextWasteBfs) {
+    bool ok = strlen(v) == 4;
+    for (const char* c = v; *c != '\0'; ++c) ok = ok && *c >= '0' && *c <= '9';
+    if (!ok) {
+      lv_label_set_text(txt_status, "BFS-Nummer: 4 Ziffern, z.B. 3271");
+      return true;
+    }
+  }
+  if (txt_which == kUrlIcal && strncmp(v, "http://", 7) != 0 && strncmp(v, "https://", 8) != 0) {
     lv_label_set_text(txt_status, "Adresse muss mit http:// oder https:// beginnen");
     return true;
   }
@@ -1069,16 +1098,14 @@ void build_info_screens(lv_obj_t* screen) {
   // Einstellungen > Kalender
   calset_root = make_screen_root(screen, "Kalender");
   make_value_row(calset_root, 60, "Familienkalender", ICON_EVENT, kPurple, on_calset_row, 0, "calset:ical", &calset_val[0]);
-  make_value_row(calset_root, 140, "Abfallkalender", ICON_RECYCLE, kGreen, on_calset_row, 1, "calset:waste", &calset_val[1]);
-  make_value_row(calset_root, 220, "Hinweis am Abfuhrtag bis", ICON_SCHEDULE, kAmber, on_waste_until, 0, "calset:until",
+  make_value_row(calset_root, 140, "Abfall: Gemeinde", ICON_RECYCLE, kGreen, on_calset_row, kTextWasteBfs, "calset:bfs",
+                 &calset_val[1]);
+  make_value_row(calset_root, 220, "Abfall: Zone", ICON_RECYCLE, kGreen, on_calset_row, kTextWasteZone, "calset:zone",
+                 &calset_val[3]);
+  make_value_row(calset_root, 300, "Abfallkalender-API", ICON_RECYCLE, kGreen, on_calset_row, kUrlWaste, "calset:waste",
+                 &calset_val[2]);
+  make_value_row(calset_root, 380, "Hinweis am Abfuhrtag bis", ICON_SCHEDULE, kAmber, on_waste_until, 0, "calset:until",
                  &calset_until_val);
-  lv_obj_t* calnote = make_label(calset_root, &font_inter_14, lv_color_hex(kTextDim));
-  lv_obj_set_pos(calnote, 24, 308);
-  lv_obj_set_width(calnote, 432);
-  lv_label_set_long_mode(calnote, LV_LABEL_LONG_WRAP);
-  lv_label_set_text(calnote,
-                    "Familienkalender: geheime iCal-Adresse (Google Kalender > Einstellungen > \"Geheime Adresse "
-                    "im iCal-Format\"). Abfall: Seite buchs-sg.ch/abfallkalender oder eine .ics-Adresse.");
 
   txt_root = make_screen_root(screen, "");
   txt_title = lv_obj_get_child(txt_root, 0);

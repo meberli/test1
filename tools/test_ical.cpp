@@ -65,14 +65,6 @@ int main(int argc, char** argv) {
     printf("%s: %d upcoming\n", argv[1], n);
     dump(ev, n);
   }
-  if (argc > 2) {
-    size_t len;
-    char* c = slurp(argv[2], &len);
-    n = waste_parse_html(c, len, now, now + 60LL * 86400, ev, 16, lm);
-    printf("%s: %d waste dates\n", argv[2], n);
-    dump(ev, n);
-    if (n < 5) { puts("FAIL waste"); fails++; }
-  }
   printf("fails: %d\n", fails);
   return fails;
 }

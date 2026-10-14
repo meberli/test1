@@ -584,13 +584,17 @@ void net_task(void*) {
         break;
       }
       case NetOp::Calendar: {
-        char* ical = static_cast<char*>(heap_caps_malloc(512, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        char* ical = static_cast<char*>(heap_caps_malloc(640, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
         if (ical == nullptr) break;
         char* waste = ical + 256;
+        char* bfs = ical + 512;
+        char* zone = ical + 528;
         settings_load_text(kUrlIcal, ical, 256, nullptr);
         settings_load_text(kUrlWaste, waste, 256, nullptr);
-        res.ok = calendar_fetch(ical, waste, &g_cal);
-        memset(ical, 0, 512);
+        settings_load_text(kTextWasteBfs, bfs, 16, nullptr);
+        settings_load_text(kTextWasteZone, zone, 112, nullptr);
+        res.ok = calendar_fetch(ical, waste, bfs, zone, &g_cal);
+        memset(ical, 0, 640);
         heap_caps_free(ical);
         break;
       }

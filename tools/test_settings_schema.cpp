@@ -31,6 +31,12 @@ int main() {
   CHECK(str("waste_url", "http://example.com/x"));
   CHECK(!str("waste_url", "ftp://example.com/x"));
   CHECK(!str("waste_url", "https://a b"));
+  CHECK(str("waste_api", "https://abfall-sg.hispeed.workers.dev"));
+  CHECK(!str("waste_api", "http://abfall-sg.hispeed.workers.dev"));
+  CHECK(str("waste_bfs", "3271"));
+  CHECK(!str("waste_bfs", "327"));
+  CHECK(!str("waste_bfs", "32a1"));
+  CHECK(str("waste_zone", "Nesslau, Neu St. Johann"));
   // hosts, digits
   CHECK(str("lox_host", "192.168.1.5"));
   CHECK(!str("lox_host", "http://x"));

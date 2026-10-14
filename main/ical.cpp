@@ -307,49 +307,6 @@ int ical_parse(char* buf, size_t len, int64_t from, int64_t to, CalEvent* out, i
   return n;
 }
 
-int waste_parse_html(const char* buf, size_t len, int64_t from, int64_t to, CalEvent* out, int cap,
-                     LocalMktime lm) {
-  int n = 0;
-  const char* end = buf + len;
-  const char* p = buf;
-  static const char kTag[] = "<add-to-calendar-button";
-  while (p < end) {
-    const char* tag = static_cast<const char*>(memmem(p, end - p, kTag, sizeof(kTag) - 1));
-    if (tag == nullptr) break;
-    const char* close = static_cast<const char*>(memchr(tag, '>', end - tag));
-    if (close == nullptr) break;
-    p = close + 1;
-    const char* nm = static_cast<const char*>(memmem(tag, close - tag, "name=\"", 6));
-    const char* sd = static_cast<const char*>(memmem(tag, close - tag, "startDate=\"", 11));
-    if (nm == nullptr || sd == nullptr) continue;
-    nm += 6;
-    const char* nm_end = static_cast<const char*>(memchr(nm, '"', close - nm));
-    if (nm_end == nullptr) continue;
-    int y, mo, d;
-    if (sscanf(sd + 11, "%4d-%2d-%2d", &y, &mo, &d) != 3) continue;
-    struct tm t = {};
-    t.tm_year = y - 1900;
-    t.tm_mon = mo - 1;
-    t.tm_mday = d;
-    t.tm_isdst = -1;
-    CalEvent ce = {};
-    ce.start = lm(&t);
-    ce.all_day = true;
-    ce.kind = 1;
-    size_t l = static_cast<size_t>(nm_end - nm);
-    if (l >= sizeof(ce.title)) l = sizeof(ce.title) - 1;
-    memcpy(ce.title, nm, l);
-    ce.title[l] = '\0';
-    ce.uid = cal_hash(ce.title);
-    if (ce.start + 86399 < from || ce.start >= to) continue;
-    bool dup = false;  // the page lists each date once per view (date and type tabs)
-    for (int i = 0; i < n; ++i) {
-      if (out[i].start == ce.start && strcmp(out[i].title, ce.title) == 0) dup = true;
-    }
-    if (!dup) n = cal_insert(out, n, cap, ce);
-  }
-  return n;
-}
 
 uint32_t cal_hash(const char* s, uint32_t h) {
   for (; *s != '\0'; ++s) {

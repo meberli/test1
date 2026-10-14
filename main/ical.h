@@ -31,10 +31,6 @@ using LocalMktime = int64_t (*)(struct tm* t);
 int ical_parse(char* buf, size_t len, int64_t from, int64_t to, CalEvent* out, int cap, uint8_t kind,
                LocalMktime local_mktime);
 
-// Buchs SG "Abfallkalender" web page (buchs-sg.ch/abfallkalender/): the
-// <add-to-calendar-button name="..." startDate="YYYY-MM-DD"> entries.
-int waste_parse_html(const char* buf, size_t len, int64_t from, int64_t to, CalEvent* out, int cap,
-                     LocalMktime local_mktime);
 
 uint32_t cal_hash(const char* s, uint32_t h = 2166136261u);  // FNV-1a
 

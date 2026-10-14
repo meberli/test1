@@ -22,6 +22,7 @@ jobs:
           g++ -std=c++17 -Wall -I main tools/test_ical.cpp main/ical.cpp -o /tmp/ti && TZ=Europe/Zurich /tmp/ti
           g++ -std=c++17 -Wall -I main -DOTA_VER_HOST tools/test_ota_ver.cpp -o /tmp/to && /tmp/to
           g++ -std=c++17 -Wall -Itools/host_stub -Imain tools/test_settings_schema.cpp main/settings_schema.cpp -o /tmp/ts && /tmp/ts
+          g++ -std=c++17 -Wall -I main -I components/ArduinoJson/src tools/test_waste_api.cpp main/waste_api.cpp main/ical.cpp -o /tmp/twa && TZ=Europe/Zurich /tmp/twa
           g++ -std=c++17 -Wall -I main tools/test_weather_derive.cpp main/weather_derive.cpp -o /tmp/tw && /tmp/tw
 
   build:

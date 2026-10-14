@@ -22,7 +22,7 @@ Echte Screenshots vom Panel (über den Test-Harness aufgenommen). Netzwerk- und 
 - **MeteoSchweiz** – Unwetterwarnungen (Badge auf Home, Details in der Regenansicht) und Niederschlagsprognose für die nächsten 2 Stunden in 10-min-Schritten (radarbasiert), über die PLZ (inoffizielle Schnittstelle, siehe unten).
 - **Webcams** – Windy Webcams API, Suche nach ID oder Ort (25 km), Bilder 1:1 ohne Hochskalieren, Refresh alle 2 min.
 - **ÖV** – Abfahrtstafel über transport.opendata.ch, Haltestellensuche, Kurzinfo auf Home.
-- **Kalender & Abfall** – privater iCal-Familienkalender und Abfuhrkalender, Übersicht auf eigener Seite und Kurzinfo auf Home.
+- **Kalender & Abfall** – privater iCal-Familienkalender und Abfuhrkalender (Abfallkalender-API Kanton St. Gallen, Gemeinde per BFS-Nr. wählbar, Abruf beim Start und einmal täglich), Übersicht auf eigener Seite und Kurzinfo auf Home.
 - **Erinnerungen** – Karte auf Home und Bildschirmschoner mit „OK“-Quittung (gespeichert in NVS). Vorlauf: 15 min, 1 Std., 3 Std., 1 Tag, Vorabend 18:00, Morgens 07:00 – getrennt für Termine und Abfuhr.
 - **Bildschirmschoner** – Timeout (Aus … 10 min), Schwarz mit wanderndem „wake me up“, Digitaluhr oder Schweizer Bahnhofsuhr (Sekundenzeiger 58,5 s mit Stopp bei 12). Backlight-Fade per LEDC; der Weck-Touch löst nichts aus.
 - **NTP & Zeitzone** – `esp_netif_sntp`, Server und Zeitzone wählbar (Standard `ch.pool.ntp.org`, Europe/Zurich).

@@ -71,3 +71,11 @@
 * CI (`.github/workflows/ci.yml`): Host-Tests + Firmware-Build mit Wegwerf-Schlüssel
   + generischer Secret-Scan. Release (`release.yml`) nur bei Tag `v*`, signiert
   mit dem Secret `APP_SIGNING_KEY`, Signatur geprüft, Secret-Scan.
+
+## Abfallkalender
+
+`waste_api.cpp` liest die Abfallkalender-API (`<waste_api>/api/abfallkalender?gemeinde=<waste_bfs>&ab=<heute>`,
+Standard `https://abfall-sg.hispeed.workers.dev`, BFS 3271 = Buchs SG). Bei Gemeinden mit mehreren Touren
+liefert die API `zonen`; ist `waste_zone` gesetzt und vorhanden, gelten deren Termine, sonst die Vereinigung.
+Die Netz-Task hält die Termine in einem eigenen Cache: Abruf beim Start, dann einmal pro Tag (bei Fehlern
+höchstens stündlich, bei geänderter Einstellung sofort). Host-Test: `tools/test_waste_api.cpp`.
