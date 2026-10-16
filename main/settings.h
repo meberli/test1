@@ -126,7 +126,7 @@ struct ReminderSettings {
   bool cal;            // family calendar
   bool waste;          // Abfallkalender
   uint8_t lead_cal;    // preset index
-  uint8_t lead_waste;  // preset index
+  uint8_t lead_waste;  // unused since config version 2 (see wst_from), kept for old backups
 };
 // Abfallkalender: on the collection day the home hint (chip, reminder card)
 // shows until this local time, minutes after midnight (default 08:00 = 480,
@@ -134,6 +134,11 @@ struct ReminderSettings {
 constexpr uint16_t kWasteUntilDefault = 480;
 uint16_t settings_load_waste_until();
 bool settings_save_waste_until(uint16_t minutes);
+// Abfallkalender reminder: from this local time on the day before the
+// collection (minutes after midnight, default 18:00 = 1080). NVS "wst_from";
+// replaces the lead preset rem_lwst (config version 2).
+uint16_t settings_load_waste_from();
+bool settings_save_waste_from(uint16_t minutes);
 ReminderSettings settings_load_reminders();  // default on, cal 1 h, waste Vorabend 18:00
 bool settings_save_reminders(const ReminderSettings& r);
 // Acknowledged reminders (key = hash of event UID + start), ring of the last 48 in NVS "rem_ack".

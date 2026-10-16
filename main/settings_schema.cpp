@@ -47,6 +47,7 @@ const KeySpec kSchema[] = {
     {"rem_lwst", KeyType::U8, 0, kLeadN - 1, 0, 0},
     {"rem_ack", KeyType::Blob, kAckBytes, kAckBytes, 0, 0},
     {"wst_until", KeyType::U16, 0, 1440, 0, 0},
+    {"wst_from", KeyType::U16, 0, 1439, 0, 0},
     {"lox_host", KeyType::Str, 1, 63, kKeyHost, 0},
     {"lox_port", KeyType::U16, 1, 65535, 0, 0},
     {"lox_user", KeyType::Str, 0, 32, 0, 0},

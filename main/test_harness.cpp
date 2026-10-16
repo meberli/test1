@@ -201,6 +201,9 @@ void handle(char* cmd) {
   } else if (sscanf(cmd, "REMTEST %d %d", &a, &b) == 2) {
     ui_rem_test(a, b);
     console_puts("OK");
+  } else if (strncmp(cmd, "WASTEFROM", 9) == 0) {
+    if (cmd[9] == ' ') ui_set_waste_from(static_cast<uint16_t>(atoi(cmd + 10)));
+    console_printf("WASTEFROM %u\n", ui_waste_from());
   } else if (strncmp(cmd, "WASTEUNTIL", 10) == 0) {
     if (cmd[10] == ' ') ui_set_waste_until(static_cast<uint16_t>(atoi(cmd + 11)));
     console_printf("WASTEUNTIL %u\n", ui_waste_until());

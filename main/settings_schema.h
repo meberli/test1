@@ -7,7 +7,7 @@
 #include <stdint.h>
 
 // Bumped when a key changes meaning, type or range; settings_migrate() converts.
-constexpr uint8_t kCfgVersion = 1;
+constexpr uint8_t kCfgVersion = 2;  // 2: wst_from replaces rem_lwst for waste reminders
 
 enum class KeyType : uint8_t { U8, U16, Str, Blob };
 

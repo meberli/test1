@@ -92,6 +92,9 @@ lv_obj_t* calset_root = nullptr;
 lv_obj_t* calset_val[4] = {};  // iCal, Gemeinde (BFS), API, Zone
 lv_obj_t* calset_until_val = nullptr;
 uint16_t waste_until_min = kWasteUntilDefault;  // loaded in ui_init
+uint16_t waste_from_min = kWasteFromDefault;    // "Am Vortag ab"
+lv_obj_t* calset_from_val = nullptr;
+constexpr uint16_t kWasteFromPresets[] = {720, 840, 960, 1020, 1080, 1140, 1200, 1260};
 constexpr uint16_t kWasteUntilPresets[] = {420, 480, 540, 600, 720, 840, 1080, 1440};
 lv_obj_t* txt_root = nullptr;
 lv_obj_t* txt_title = nullptr;
@@ -749,6 +752,11 @@ void calset_refresh() {
     fmt_waste_until(t, sizeof(t), waste_until_min);
     lv_label_set_text(calset_until_val, t);
   }
+  if (calset_from_val != nullptr) {
+    char t[24];
+    fmt_waste_until(t, sizeof(t), waste_from_min);
+    lv_label_set_text(calset_from_val, t);
+  }
   if (set_cal_val != nullptr) {
     if (cal != nullptr && cal_have)
       lv_label_set_text_fmt(set_cal_val, "%d Termine \xC2\xB7 %d Abfuhrdaten", cal->n_events, cal->n_waste);
@@ -796,6 +804,14 @@ void on_calset_row(lv_event_t* e) {
 }
 
 // "Hinweis am Abfuhrtag bis": each tap steps to the next preset.
+void on_waste_from(lv_event_t*) {
+  if (gesture_consumed) return;
+  constexpr int n = sizeof(kWasteFromPresets) / sizeof(kWasteFromPresets[0]);
+  int i = 0;
+  while (i < n && kWasteFromPresets[i] <= waste_from_min) ++i;
+  ui_set_waste_from(kWasteFromPresets[i < n ? i : 0]);
+}
+
 void on_waste_until(lv_event_t*) {
   if (gesture_consumed) return;
   size_t n = sizeof(kWasteUntilPresets) / sizeof(kWasteUntilPresets[0]);
@@ -1098,14 +1114,16 @@ void build_info_screens(lv_obj_t* screen) {
   // Einstellungen > Kalender
   calset_root = make_screen_root(screen, "Kalender");
   make_value_row(calset_root, 60, "Familienkalender", ICON_EVENT, kPurple, on_calset_row, 0, "calset:ical", &calset_val[0]);
-  make_value_row(calset_root, 140, "Abfall: Gemeinde", ICON_RECYCLE, kGreen, on_calset_row, kTextWasteBfs, "calset:bfs",
-                 &calset_val[1]);
-  make_value_row(calset_root, 220, "Abfall: Zone", ICON_RECYCLE, kGreen, on_calset_row, kTextWasteZone, "calset:zone",
-                 &calset_val[3]);
-  make_value_row(calset_root, 300, "Abfallkalender-API", ICON_RECYCLE, kGreen, on_calset_row, kUrlWaste, "calset:waste",
-                 &calset_val[2]);
-  make_value_row(calset_root, 380, "Hinweis am Abfuhrtag bis", ICON_SCHEDULE, kAmber, on_waste_until, 0, "calset:until",
+  make_value_row(calset_root, 140, "Abfall: Am Vortag ab", ICON_SCHEDULE, kAmber, on_waste_from, 0, "calset:from",
+                 &calset_from_val);
+  make_value_row(calset_root, 220, "Abfall: Am Sammeltag bis", ICON_SCHEDULE, kAmber, on_waste_until, 0, "calset:until",
                  &calset_until_val);
+  make_value_row(calset_root, 300, "Abfall: Gemeinde", ICON_RECYCLE, kGreen, on_calset_row, kTextWasteBfs, "calset:bfs",
+                 &calset_val[1]);
+  make_value_row(calset_root, 380, "Abfall: Zone", ICON_RECYCLE, kGreen, on_calset_row, kTextWasteZone, "calset:zone",
+                 &calset_val[3]);
+  make_value_row(calset_root, 460, "Abfallkalender-API", ICON_RECYCLE, kGreen, on_calset_row, kUrlWaste, "calset:waste",
+                 &calset_val[2]);
 
   txt_root = make_screen_root(screen, "");
   txt_title = lv_obj_get_child(txt_root, 0);

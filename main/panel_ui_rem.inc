@@ -58,6 +58,7 @@ int64_t at_local(int64_t day_of, int days_before, int hh, int mm) {
 // When the reminder for e with preset lead appears. All-day events (waste)
 // count from 07:00 on their day for the duration presets.
 int64_t rem_trigger(const CalEvent& e, uint8_t lead) {
+  if (e.kind == 1) return waste_window_start(e.start, waste_from_min);  // "Am Vortag ab"
   int64_t ref = e.all_day ? at_local(e.start, 0, 7, 0) : e.start;
   switch (lead) {
     case 0: return ref - 15 * 60;
@@ -75,7 +76,7 @@ int64_t rem_trigger(const CalEvent& e, uint8_t lead) {
 // Unacknowledged reminders drop out this long after the event start.
 // Waste: at the "Hinweis am Abfuhrtag bis" time of the collection day.
 int64_t rem_expire(const CalEvent& e) {
-  if (e.kind == 1 && waste_until_min < 1440) return at_local(e.start, 0, waste_until_min / 60, waste_until_min % 60);
+  if (e.kind == 1) return waste_window_end(e.start, waste_until_min);  // "Am Sammeltag bis"
   return e.start + (e.all_day ? 86400 : 6 * 3600);
 }
 
@@ -235,12 +236,9 @@ void remset_refresh() {
   set_checked(rem_sw[2], rem_cfg.waste);
   for (int i = 0; i < kLeadN; ++i) {
     set_checked(rem_lead_btn[0][i], i == rem_cfg.lead_cal);
-    set_checked(rem_lead_btn[1][i], i == rem_cfg.lead_waste);
     if (rem_lead_btn[0][i] != nullptr) {
       if (rem_cfg.on && rem_cfg.cal) lv_obj_clear_state(rem_lead_btn[0][i], LV_STATE_DISABLED);
       else lv_obj_add_state(rem_lead_btn[0][i], LV_STATE_DISABLED);
-      if (rem_cfg.on && rem_cfg.waste) lv_obj_clear_state(rem_lead_btn[1][i], LV_STATE_DISABLED);
-      else lv_obj_add_state(rem_lead_btn[1][i], LV_STATE_DISABLED);
     }
   }
   if (set_rem_val != nullptr) {
@@ -250,8 +248,8 @@ void remset_refresh() {
       char b[80] = "";
       if (rem_cfg.cal) snprintf(b, sizeof(b), "Termine %s", kLeadLabel[rem_cfg.lead_cal]);
       if (rem_cfg.waste)
-        snprintf(b + strlen(b), sizeof(b) - strlen(b), "%sAbfuhr %s", rem_cfg.cal ? " \xC2\xB7 " : "",
-                 kLeadLabel[rem_cfg.lead_waste]);
+        snprintf(b + strlen(b), sizeof(b) - strlen(b), "%sAbfuhr ab %02u:%02u", rem_cfg.cal ? " \xC2\xB7 " : "",
+                 waste_from_min / 60, waste_from_min % 60);
       lv_label_set_text(set_rem_val, b);
     }
   }
@@ -279,8 +277,7 @@ void on_rem_switch(lv_event_t* e) {
 void on_rem_lead(lv_event_t* e) {
   if (gesture_consumed) return;
   int v = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
-  if (v >= 100) rem_cfg.lead_waste = static_cast<uint8_t>(v - 100);
-  else rem_cfg.lead_cal = static_cast<uint8_t>(v);
+  rem_cfg.lead_cal = static_cast<uint8_t>(v);
   rem_changed();
 }
 
@@ -312,13 +309,20 @@ lv_obj_t* rem_switch_row(lv_obj_t* parent, int y, int h, const char* name, const
 void build_reminders(lv_obj_t* screen) {
   rem_cfg = settings_load_reminders();
   waste_until_min = settings_load_waste_until();
+  waste_from_min = settings_load_waste_from();
 
   remset_root = make_screen_root(screen, "Erinnerungen");
   rem_switch_row(remset_root, 58, 60, "Termin-Erinnerungen", ICON_NOTIFY, kAmber, 0, "rem:on");
   rem_switch_row(remset_root, 128, 52, "Familienkalender", ICON_EVENT, kPurple, 1, "rem:cal");
   rem_switch_row(remset_root, 292, 52, "Abfallkalender", ICON_RECYCLE, kGreen, 2, "rem:waste");
-  for (int src = 0; src < 2; ++src) {
-    int y0 = src == 0 ? 186 : 350;
+  lv_obj_t* wnote = make_label(remset_root, &font_inter_14, lv_color_hex(kTextDim));
+  lv_obj_set_pos(wnote, kMargin, 354);
+  lv_obj_set_width(wnote, kScreen - 2 * kMargin);
+  lv_label_set_long_mode(wnote, LV_LABEL_LONG_WRAP);
+  lv_label_set_text(wnote, "Abfuhr: Hinweis am Vortag ab ... bis am Sammeltag ... "
+                           "(Einstellungen > Kalender)");
+  for (int src = 0; src < 1; ++src) {  // waste: time window in Einstellungen > Kalender
+    int y0 = 186;
     for (int i = 0; i < kLeadN; ++i) {
       char key[12];
       snprintf(key, sizeof(key), "rem:%c%d", src == 0 ? 'c' : 'w', i);
@@ -379,8 +383,8 @@ bool rem_shown_now() { return rem_shown; }
 
 bool rem_describe(char* out, size_t n) {
   if (nav != Nav::RemSet) return false;
-  snprintf(out, n, "remset on=%d cal=%d/%d waste=%d/%d", rem_cfg.on, rem_cfg.cal, rem_cfg.lead_cal, rem_cfg.waste,
-           rem_cfg.lead_waste);
+  snprintf(out, n, "remset on=%d cal=%d/%d waste=%d from=%u", rem_cfg.on, rem_cfg.cal, rem_cfg.lead_cal, rem_cfg.waste,
+           waste_from_min);
   return true;
 }
 
@@ -418,6 +422,18 @@ void ui_set_waste_until(uint16_t minutes) {
 }
 
 uint16_t ui_waste_until() { return waste_until_min; }
+
+void ui_set_waste_from(uint16_t minutes) {
+  if (minutes > 1439) return;
+  waste_from_min = minutes;
+  bool ok = settings_save_waste_from(minutes);
+  console_printf("Waste hint from %u min (day before) saved=%d\n", minutes, ok ? 1 : 0);
+  calset_refresh();
+  remset_refresh();
+  rem_tick(true);
+}
+
+uint16_t ui_waste_from() { return waste_from_min; }
 
 // Test: a waste collection today at the top of the loaded calendar.
 bool ui_waste_test() {

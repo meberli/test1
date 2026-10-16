@@ -148,6 +148,8 @@ void ui_rem_test(int minutes, int kind);
 void ui_rem_clear();
 void ui_set_waste_until(uint16_t minutes);  // persists (NVS), refreshes chip and reminders
 uint16_t ui_waste_until();
+void ui_set_waste_from(uint16_t minutes);  // "Am Vortag ab" (minutes), persists, refreshes reminders
+uint16_t ui_waste_from();
 bool ui_waste_test();  // test harness: inject a waste collection today
 int ui_rem_pending();
 void ui_saver_describe(char* out, size_t n);  // screensaver state for DIAGFB

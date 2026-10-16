@@ -137,14 +137,16 @@ def main():
     check("scr=on" in s and rem(s) == 1, "tap outside the card wakes, reminder stays: " + s)
     ack_all(p)
 
-    # Waste (all-day today) with lead Vorabend 18:00 -> pending
+    # Waste (all-day today) inside the waste window -> pending
     # (shown until "Hinweis am Abfuhrtag bis": use the latest cutoff, then restore the saved one)
     until0 = int(p.cmd("WASTEUNTIL", expect=("WASTEUNTIL",)).split()[1])
     p.cmd("WASTEUNTIL 1440", expect=("WASTEUNTIL",))
+    time.sleep(1)
+    r0 = rem(state(p))  # a real collection today would also show now
     p.cmd("REMTEST 0 1", expect=("OK",))
     time.sleep(1)
     s = state(p)
-    check(rem(s) == 1, "waste today (Vorabend 18:00) queued")
+    check(rem(s) == r0 + 1, f"waste today queued ({r0} real)")
     p.cmd(f"WASTEUNTIL {until0}", expect=("WASTEUNTIL",))
     shot("home_waste")
     ack_all(p)

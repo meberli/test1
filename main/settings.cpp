@@ -1,4 +1,5 @@
 #include "settings.h"
+#include "waste_window.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -568,10 +569,11 @@ int settings_import_json(const char* json, size_t len, char* report, size_t rn) 
       if (e == ESP_OK) ++written;
     }
     if (pass == 1) {
-      nvs_set_u8(h, "cfg_ver", kCfgVersion);
+      nvs_set_u8(h, "cfg_ver", static_cast<uint8_t>(ver));  // older backups: converted below
       nvs_commit(h);
       nvs_close(h);
       (void)skipped;
+      settings_migrate();
       return written;
     }
   }
@@ -586,7 +588,17 @@ void settings_migrate() {
   if (nvs_get_u8(h, "cfg_ver", &v) != ESP_OK) v = 0;
   if (v < kCfgVersion) {
     // 0 -> 1: the layout of v0.7.5 is version 1; nothing to convert yet.
-    // Future steps: if (v < 2) { ... rename/convert keys ... }
+    // 1 -> 2: waste reminders use "Am Vortag ab" (wst_from) instead of the lead
+    // preset rem_lwst: "1 Tag" (day before 07:00) -> 07:00, all others -> 18:00.
+    uint16_t from = 0;
+    if (v < 2 && nvs_get_u16(h, "wst_from", &from) != ESP_OK) {
+      uint8_t lead = 4;
+      nvs_get_u8(h, "rem_lwst", &lead);
+      from = lead == 3 ? 420 : kWasteFromDefault;
+      nvs_set_u16(h, "wst_from", from);
+      console_printf("Settings: waste reminder lead %u -> from %02u:%02u on the day before\n", lead, from / 60,
+                     from % 60);
+    }
     nvs_set_u8(h, "cfg_ver", kCfgVersion);
     nvs_commit(h);
     console_printf("Settings: config version %u -> %u\n", v, kCfgVersion);
@@ -620,6 +632,22 @@ uint16_t settings_load_waste_until() {
   if (nvs_get_u16(h, "wst_until", &t) == ESP_OK && t <= 1440) v = t;
   nvs_close(h);
   return v;
+}
+
+uint16_t settings_load_waste_from() {
+  uint16_t v = kWasteFromDefault;
+  nvs_handle_t h;
+  if (nvs_open(kNs, NVS_READONLY, &h) != ESP_OK) return v;
+  uint16_t t = 0;
+  if (nvs_get_u16(h, "wst_from", &t) == ESP_OK && t <= 1439) v = t;
+  nvs_close(h);
+  return v;
+}
+
+bool settings_save_waste_from(uint16_t minutes) {
+  Tx tx;
+  tx.u16("wst_from", minutes);
+  return tx.commit();
 }
 
 bool settings_save_waste_until(uint16_t minutes) {

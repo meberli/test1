@@ -1,5 +1,6 @@
 #include "panel_ui.h"
 #include "strings_de.h"
+#include "waste_window.h"
 
 #include "sys.h"
 #include "lvgl.h"
