@@ -29,3 +29,16 @@ int64_t waste_window_end(int64_t day, uint16_t until_min) {
 bool waste_window_active(int64_t day, int64_t now, uint16_t from_min, uint16_t until_min) {
   return now >= waste_window_start(day, from_min) && now < waste_window_end(day, until_min);
 }
+
+int64_t cal_window_start(int64_t start, bool all_day, uint16_t from_min, uint16_t lead_min) {
+  if (all_day) return waste_window_start(start, from_min);
+  return start - static_cast<int64_t>(lead_min) * 60;
+}
+
+int64_t cal_window_end(int64_t start, bool all_day) {
+  return all_day ? waste_window_end(start, 1440) : start;
+}
+
+bool cal_window_active(int64_t start, bool all_day, int64_t now, uint16_t from_min, uint16_t lead_min) {
+  return now >= cal_window_start(start, all_day, from_min, lead_min) && now < cal_window_end(start, all_day);
+}

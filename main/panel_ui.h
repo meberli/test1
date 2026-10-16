@@ -144,12 +144,17 @@ void ui_ota_done(bool ok, const char* err);
 
 // Termin-Erinnerungen (test harness): synthetic event in `minutes` (kind 1 = all-day waste),
 // clear queue and acknowledged list, pending count.
-void ui_rem_test(int minutes, int kind);
+void ui_rem_test(int minutes, int kind);  // kind 0 timed, 1 waste (all-day), 2 all-day family event
+void ui_rem_drop_tests();
 void ui_rem_clear();
 void ui_set_waste_until(uint16_t minutes);  // persists (NVS), refreshes chip and reminders
 uint16_t ui_waste_until();
 void ui_set_waste_from(uint16_t minutes);  // "Am Vortag ab" (minutes), persists, refreshes reminders
 uint16_t ui_waste_from();
+void ui_set_cal_lead(uint16_t minutes);  // timed events: lead (minutes), persists
+uint16_t ui_cal_lead();
+void ui_set_cal_from(uint16_t minutes);  // all-day events: "Am Vortag ab" (minutes), persists
+uint16_t ui_cal_from();
 bool ui_waste_test();  // test harness: inject a waste collection today
 int ui_rem_pending();
 void ui_saver_describe(char* out, size_t n);  // screensaver state for DIAGFB

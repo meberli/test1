@@ -34,6 +34,8 @@ int main() {
   CHECK(str("waste_api", "https://abfall-sg.hispeed.workers.dev"));
   CHECK(!str("waste_api", "http://abfall-sg.hispeed.workers.dev"));
   CHECK(schema_find("wst_from") != nullptr);
+  CHECK(schema_find("cal_lead") != nullptr);
+  CHECK(schema_find("cal_from") != nullptr);
   CHECK(str("waste_bfs", "3271"));
   CHECK(!str("waste_bfs", "327"));
   CHECK(!str("waste_bfs", "32a1"));

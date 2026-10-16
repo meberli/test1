@@ -125,8 +125,10 @@ struct ReminderSettings {
   bool on;
   bool cal;            // family calendar
   bool waste;          // Abfallkalender
-  uint8_t lead_cal;    // preset index
+  uint8_t lead_cal;    // unused since config version 3 (see cal_lead_min / cal_from_min), kept for old backups
   uint8_t lead_waste;  // unused since config version 2 (see wst_from), kept for old backups
+  uint16_t cal_lead_min;  // timed events: minutes before the start (NVS "cal_lead", default 60)
+  uint16_t cal_from_min;  // all-day events: from this time on the day before (NVS "cal_from", default 18:00)
 };
 // Abfallkalender: on the collection day the home hint (chip, reminder card)
 // shows until this local time, minutes after midnight (default 08:00 = 480,
@@ -145,6 +147,10 @@ bool settings_save_reminders(const ReminderSettings& r);
 bool settings_reminder_acked(uint32_t key);
 bool settings_reminder_ack(uint32_t key);
 void settings_reminder_clear_acks();  // test harness
+// Test harness: raw copy of the ack ring (save/restore around tests). n = settings_reminder_acks_size().
+size_t settings_reminder_acks_size();
+void settings_reminder_acks_get(uint8_t* out);
+bool settings_reminder_acks_set(const uint8_t* in);
 
 // --- Secrets that a firmware without local config must keep ---
 // Copies build-time values (Wi-Fi, Loxone, Windy key, iCal URL) into NVS when

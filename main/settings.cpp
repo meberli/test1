@@ -599,6 +599,20 @@ void settings_migrate() {
       console_printf("Settings: waste reminder lead %u -> from %02u:%02u on the day before\n", lead, from / 60,
                      from % 60);
     }
+    // 2 -> 3: family calendar reminders split by type. Old preset rem_lcal:
+    // timed lead 15 min / 1 h / 3 h kept, others -> 1 h; all-day "1 Tag" (day
+    // before 07:00) -> 07:00 on the day before, others -> 18:00.
+    uint16_t cl = 0, cf = 0;
+    if (v < 3 && nvs_get_u16(h, "cal_lead", &cl) != ESP_OK && nvs_get_u16(h, "cal_from", &cf) != ESP_OK) {
+      uint8_t lead = 1;
+      nvs_get_u8(h, "rem_lcal", &lead);
+      cl = lead == 0 ? 15 : lead == 2 ? 180 : kCalLeadDefault;
+      cf = lead == 3 ? 420 : kCalFromDefault;
+      nvs_set_u16(h, "cal_lead", cl);
+      nvs_set_u16(h, "cal_from", cf);
+      console_printf("Settings: calendar lead %u -> timed %u min, all-day from %02u:%02u\n", lead, cl, cf / 60,
+                     cf % 60);
+    }
     nvs_set_u8(h, "cfg_ver", kCfgVersion);
     nvs_commit(h);
     console_printf("Settings: config version %u -> %u\n", v, kCfgVersion);
@@ -609,7 +623,7 @@ void settings_migrate() {
 // --- Termin-Erinnerungen ---------------------------------------------------------
 
 ReminderSettings settings_load_reminders() {
-  ReminderSettings r = {true, true, true, 1, 4};
+  ReminderSettings r = {true, true, true, 1, 4, kCalLeadDefault, kCalFromDefault};
   nvs_handle_t h;
   if (nvs_open(kNs, NVS_READONLY, &h) != ESP_OK) return r;
   uint8_t v = 0;
@@ -620,6 +634,9 @@ ReminderSettings settings_load_reminders() {
   }
   if (nvs_get_u8(h, "rem_lcal", &v) == ESP_OK && v < kLeadN) r.lead_cal = v;
   if (nvs_get_u8(h, "rem_lwst", &v) == ESP_OK && v < kLeadN) r.lead_waste = v;
+  uint16_t m = 0;
+  if (nvs_get_u16(h, "cal_lead", &m) == ESP_OK && m >= 1 && m <= 1440) r.cal_lead_min = m;
+  if (nvs_get_u16(h, "cal_from", &m) == ESP_OK && m <= 1439) r.cal_from_min = m;
   nvs_close(h);
   return r;
 }
@@ -663,6 +680,8 @@ bool settings_save_reminders(const ReminderSettings& r) {
   tx.u8("rem_src", src);
   tx.u8("rem_lcal", r.lead_cal);
   tx.u8("rem_lwst", r.lead_waste);
+  tx.u16("cal_lead", r.cal_lead_min);
+  tx.u16("cal_from", r.cal_from_min);
   return tx.commit();
 }
 
@@ -701,6 +720,22 @@ bool settings_reminder_ack(uint32_t key) {
   if (settings_reminder_acked(key)) return true;
   ack_ring.key[ack_ring.next] = key;
   ack_ring.next = static_cast<uint8_t>((ack_ring.next + 1) % kAckN);
+  Tx tx;
+  tx.blob("rem_ack", &ack_ring, sizeof(ack_ring));
+  return tx.commit();
+}
+
+size_t settings_reminder_acks_size() { return sizeof(ack_ring); }
+
+void settings_reminder_acks_get(uint8_t* out) {
+  ack_load();
+  memcpy(out, &ack_ring, sizeof(ack_ring));
+}
+
+bool settings_reminder_acks_set(const uint8_t* in) {
+  memcpy(&ack_ring, in, sizeof(ack_ring));
+  if (ack_ring.next >= kAckN) ack_ring.next = 0;
+  ack_loaded = true;
   Tx tx;
   tx.blob("rem_ack", &ack_ring, sizeof(ack_ring));
   return tx.commit();

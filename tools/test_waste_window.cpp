@@ -45,6 +45,29 @@ int main() {
   CHECK(waste_window_end(at(2026, 3, 29, 0, 0), 480) == at(2026, 3, 29, 8, 0), "DST start day");
   CHECK(waste_window_end(at(2026, 3, 29, 0, 0), 480) - waste_window_start(at(2026, 3, 29, 0, 0), 1080) == 13 * 3600,
         "13 h incl. lost hour");
+  // Family calendar: all-day from the day before 18:00 to the end of the day
+  CHECK(cal_window_start(day, true, 1080, 60) == at(2026, 10, 15, 18, 0), "cal all-day start");
+  CHECK(cal_window_end(day, true) == at(2026, 10, 17, 0, 0), "cal all-day end of day");
+  CHECK(!cal_window_active(day, true, at(2026, 10, 15, 17, 59), 1080, 60), "cal all-day 17:59 before");
+  CHECK(cal_window_active(day, true, at(2026, 10, 16, 23, 59), 1080, 60), "cal all-day 23:59 shown");
+  CHECK(!cal_window_active(day, true, at(2026, 10, 17, 0, 0), 1080, 60), "cal all-day next day gone");
+  CHECK(cal_window_start(day, true, 720, 60) == at(2026, 10, 15, 12, 0), "cal all-day 12:00");
+  // all-day on the DST end day (25 Oct): day before 18:00, end next midnight (25 h day)
+  int64_t dst = at(2026, 10, 25, 0, 0);
+  CHECK(cal_window_start(dst, true, 1080, 60) == at(2026, 10, 24, 18, 0), "cal all-day DST start");
+  CHECK(cal_window_end(dst, true) - dst == 25 * 3600, "cal all-day DST 25 h day");
+  // Timed: lead minutes before the start until the start
+  int64_t st = at(2026, 10, 16, 14, 30);
+  CHECK(cal_window_start(st, false, 1080, 60) == at(2026, 10, 16, 13, 30), "timed 60 min");
+  CHECK(cal_window_start(st, false, 1080, 15) == at(2026, 10, 16, 14, 15), "timed 15 min");
+  CHECK(cal_window_start(st, false, 1080, 180) == at(2026, 10, 16, 11, 30), "timed 3 h");
+  CHECK(!cal_window_active(st, false, at(2026, 10, 16, 13, 29), 1080, 60), "timed before lead");
+  CHECK(cal_window_active(st, false, at(2026, 10, 16, 13, 30), 1080, 60), "timed lead reached");
+  CHECK(cal_window_active(st, false, st - 1, 1080, 60), "timed just before start");
+  CHECK(!cal_window_active(st, false, st, 1080, 60), "timed gone at start");
+  // Timed across midnight: 00:30 with 2 h lead -> 22:30 the day before
+  int64_t early = at(2026, 10, 16, 0, 30);
+  CHECK(cal_window_start(early, false, 1080, 120) == at(2026, 10, 15, 22, 30), "timed across midnight");
   printf("%s (%d failures)\n", fails ? "FAIL" : "OK", fails);
   return fails ? 1 : 0;
 }

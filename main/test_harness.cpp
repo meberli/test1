@@ -201,6 +201,38 @@ void handle(char* cmd) {
   } else if (sscanf(cmd, "REMTEST %d %d", &a, &b) == 2) {
     ui_rem_test(a, b);
     console_puts("OK");
+  } else if (strncmp(cmd, "CALLEAD", 7) == 0) {
+    if (cmd[7] == ' ') ui_set_cal_lead(static_cast<uint16_t>(atoi(cmd + 8)));
+    console_printf("CALLEAD %u\n", ui_cal_lead());
+  } else if (strncmp(cmd, "CALFROM", 7) == 0) {
+    if (cmd[7] == ' ') ui_set_cal_from(static_cast<uint16_t>(atoi(cmd + 8)));
+    console_printf("CALFROM %u\n", ui_cal_from());
+  } else if (strcmp(cmd, "ACKDUMP") == 0) {
+    // hex of the ack ring (save/restore real acknowledgements around tests)
+    static uint8_t raw[256];
+    size_t n = settings_reminder_acks_size();
+    settings_reminder_acks_get(raw);
+    static char hex[2 * sizeof(raw) + 1];
+    for (size_t i = 0; i < n; ++i) snprintf(hex + 2 * i, 3, "%02x", raw[i]);
+    console_printf("ACKS %s\n", hex);
+  } else if (strncmp(cmd, "ACKLOAD ", 8) == 0) {
+    // ACKLOAD <byte offset> <hex>: stage part of the ring; ACKLOAD END writes it.
+    static uint8_t stage[256];
+    size_t n = settings_reminder_acks_size();
+    if (strcmp(cmd + 8, "END") == 0) {
+      console_puts(settings_reminder_acks_set(stage) ? "OK" : "ERR nvs");
+    } else {
+      char* end = nullptr;
+      long off = strtol(cmd + 8, &end, 10);
+      const char* h = end != nullptr && *end == ' ' ? end + 1 : "";
+      size_t k = 0;
+      while (h[2 * k] != '\0' && h[2 * k + 1] != '\0' && off + k < n) {
+        char b[3] = {h[2 * k], h[2 * k + 1], 0};
+        stage[off + k] = static_cast<uint8_t>(strtoul(b, nullptr, 16));
+        ++k;
+      }
+      console_printf("OK %u\n", static_cast<unsigned>(k));
+    }
   } else if (strncmp(cmd, "WASTEFROM", 9) == 0) {
     if (cmd[9] == ' ') ui_set_waste_from(static_cast<uint16_t>(atoi(cmd + 10)));
     console_printf("WASTEFROM %u\n", ui_waste_from());
@@ -225,6 +257,9 @@ void handle(char* cmd) {
     console_printf("IMGVERIFY %s %s\n", part->label, esp_err_to_name(e));
   } else if (strcmp(cmd, "WASTETEST") == 0) {
     console_puts(ui_waste_test() ? "OK" : "ERR no calendar");
+  } else if (strcmp(cmd, "REMDROP") == 0) {
+    ui_rem_drop_tests();
+    console_puts("OK");
   } else if (strcmp(cmd, "REMCLEAR") == 0) {
     ui_rem_clear();
     console_puts("OK");

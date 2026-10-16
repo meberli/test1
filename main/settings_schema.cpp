@@ -45,6 +45,8 @@ const KeySpec kSchema[] = {
     {"rem_src", KeyType::U8, 0, 3, 0, 0},
     {"rem_lcal", KeyType::U8, 0, kLeadN - 1, 0, 0},
     {"rem_lwst", KeyType::U8, 0, kLeadN - 1, 0, 0},
+    {"cal_lead", KeyType::U16, 1, 1440, 0, 0},
+    {"cal_from", KeyType::U16, 0, 1439, 0, 0},
     {"rem_ack", KeyType::Blob, kAckBytes, kAckBytes, 0, 0},
     {"wst_until", KeyType::U16, 0, 1440, 0, 0},
     {"wst_from", KeyType::U16, 0, 1439, 0, 0},

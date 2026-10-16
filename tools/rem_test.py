@@ -9,6 +9,7 @@ import os
 import re
 import sys
 import time
+import atexit
 
 sys.path.insert(0, os.path.dirname(__file__))
 from panel_test import Panel  # noqa: E402
@@ -59,6 +60,23 @@ def main():
     check("STATE home" in s, "boot to home")
     saver0 = field(s, "saver")
     to0 = field(s, "to")
+    # Save the real acknowledgements and the calendar lead settings; restored at exit
+    acks = p.cmd("ACKDUMP", expect=("ACKS",)).split()[1]
+    lead0 = int(p.cmd("CALLEAD", expect=("CALLEAD",)).split()[1])
+    from0 = int(p.cmd("CALFROM", expect=("CALFROM",)).split()[1])
+
+    def restore():
+        p.cmd(f"CALLEAD {lead0}", expect=("CALLEAD",))
+        p.cmd(f"CALFROM {from0}", expect=("CALFROM",))
+        p.cmd("REMDROP", expect=("OK",))
+        for off in range(0, len(acks) // 2, 64):
+            p.cmd(f"ACKLOAD {off} {acks[2 * off:2 * off + 128]}", expect=("OK",))
+        ok = p.cmd("ACKLOAD END", expect=("OK", "ERR"))
+        back = p.cmd("ACKDUMP", expect=("ACKS",)).split()[1]
+        print("acks restored", ok, back == acks)
+        if back != acks:
+            FAILS.append("acks restore")
+    atexit.register(restore)
     p.cmd("REMCLEAR", expect=("OK",))
     time.sleep(40)  # calendar fetch after boot
     base = rem(state(p))
@@ -71,9 +89,12 @@ def main():
     tapn(p, "set:rem")
     s = state(p)
     check(s.startswith("STATE remset on=1"), "Erinnerungen settings: " + s)
-    tapn(p, "rem:c0")
+    tapn(p, "rem:lead")
     s = state(p)
-    check("cal=1/0" in s, "lead 15 min for Termine: " + s)
+    check(f"lead={lead0}" not in s, "tap steps the lead: " + s)
+    p.cmd("CALLEAD 15", expect=("CALLEAD",))
+    s = state(p)
+    check("lead=15" in s, "lead 15 min for Termine: " + s)
     time.sleep(1)
     shot("remset")
     tapn(p, "rem:on")
@@ -162,14 +183,9 @@ def main():
     s = state(p)
     check(rem(s) == 0, f"no acknowledged reminder after reboot ({rem(s)} pending)")
 
-    # Restore the lead preset
-    tapn(p, "cat:settings")
-    tapn(p, "set:rem")
-    tapn(p, "rem:c1")
-    s = state(p)
-    check("cal=1/1" in s, "lead back to 1 Std.")
     home(p)
-    p.cmd("REMCLEAR", expect=("OK",))  # leave the real reminders to the user
+    restore()  # lead settings and the real acknowledgements
+    atexit.unregister(restore)
     print("FAILS:", FAILS if FAILS else "none")
     sys.exit(1 if FAILS else 0)
 
